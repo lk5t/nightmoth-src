@@ -49,9 +49,18 @@ jobs:
           $exe = Get-ChildItem "$env:ProgramFiles\Nightmoth" -Filter *.exe -Recurse | Where-Object { $_.Name -notlike "uninstall*" } | Select-Object -First 1
           Write-Host "Installed exe: $($exe.FullName)"
           $p = Start-Process $exe.FullName -PassThru
-          Start-Sleep -Seconds 45
+          # The runner is an admin account, and WebView2 is slow to start elevated (20-60 s),
+          # so wait for the startup steps to show up in the logs instead of a fixed time.
+          $need = @("main window ready", "app: engine connected", "widgets window created")
+          $deadline = (Get-Date).AddSeconds(150)
+          while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
+            $l = Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -Raw -ErrorAction SilentlyContinue
+            if ($l -and ($need | Where-Object { $l -notmatch [regex]::Escape($_) }).Count -eq 0) { break }
+            Start-Sleep -Seconds 3
+          }
+          Start-Sleep -Seconds 5
           $alive = -not $p.HasExited
-          Write-Host "App alive after 45s: $alive"
+          Write-Host "App alive: $alive"
           Write-Host "Nightmoth processes:"
           Get-CimInstance Win32_Process -Filter "Name='nightmoth.exe'" | ForEach-Object { Write-Host "  $($_.ProcessId) $($_.CommandLine)" }
           Write-Host "Scheduled task:"
