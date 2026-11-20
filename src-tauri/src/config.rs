@@ -160,6 +160,8 @@ pub struct Config {
     // desktop tidy
     pub tidy_auto: bool,
     pub tidy_last: i64,
+    /// sort every app on the desktop into folders by kind, automatically
+    pub organize_auto: bool,
 
     // widgets (extra)
     pub notes: String,
@@ -259,6 +261,7 @@ impl Default for Config {
             taskbar_migrated: false,
             tidy_auto: true,
             tidy_last: 0,
+            organize_auto: false,
             notes: String::new(),
             weather_city: String::new(),
             weather_lat: 0.0,

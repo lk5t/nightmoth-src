@@ -159,6 +159,14 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
         "preset_apply" => ok(look::preset(&arg::<String>(a, "id")?)?),
         "gallery_list" => ok(gallery::list()?),
         "widgets_state" => ok(look::widgets_state()),
+        "public_desktop_move" => {
+            let moves: Vec<Value> = arg(a, "moves")?;
+            ok(crate::organize::public_move(&moves))
+        }
+        "public_desktop_restore" => {
+            let moves: Vec<Value> = arg(a, "moves")?;
+            ok(crate::organize::public_restore(&moves))
+        }
         "look_export" => ok(look::export()?),
         "look_import" => ok(look::import(a.get("data").unwrap_or(&Value::Null))?),
         "folders_set" => {

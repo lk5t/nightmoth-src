@@ -191,6 +191,14 @@ Master toggle: **Autopilot ON/OFF**. Each module has its own toggle and schedule
 
 **Customization**: widgets for now playing (with controls), weather (open-meteo, city chosen by the user), notes, app dock; Windows Terminal scheme + VS Code accent colours; accent mouse pointer (generated .cur); accent folder icon (Shell Icons 3/4); look export/import (`.nightmoth` file with the wallpaper inside); per-screen wallpapers (IDesktopWallpaper, main screen drives the theme); fully invisible taskbar on Windows 11 via the XAML Diagnostics helper (`tap/`), which fades out the `BackgroundFill`/`BackgroundStroke` layers, follows `HKCU\Software\Nightmoth\TaskbarClear`, and is disabled automatically after two Explorer restarts right after loading.
 
+### 3.9 Added in 0.5 — Organize desktop
+
+Every app on the desktop (shortcuts, internet shortcuts, programs that aren't setup files — on your desktop and the shared Public desktop) goes into a folder for its kind: Games, Social, Browsers, Music & Video, Creative, Work, Dev tools, System & utilities, Other apps. Nothing is left out: unclear apps go to "Other apps".
+
+Kind is decided by, in order: the user's own choice (a folder picked in Nightmoth, or an app moved by hand — learned), a large known-apps list (longest keyword wins), launcher links (`steam://`, Epic, Riot, Battle.net…) and game-library install folders, website domains for `.url` files, the exe's CompanyName/FileDescription, game-engine files next to the exe, and the publisher of the matching uninstall entry.
+
+Public desktop shortcuts are moved by the engine (admin) only into the user's own desktop category folders, with the same checks on the way back. "Organize automatically" (Autopilot) sorts new apps within a minute (shortcuts younger than 45 s are left until the installer finishes). The last organize can be undone. Tidy desktop leaves app programs to the organizer.
+
 ## 4. Toasts (Razer Cortex style)
 - Bottom-right of primary monitor, above the taskbar: 392×112 logical px window (card inset 10 px), sized from the primary monitor's scale factor so it is never cut off
 - Black card `#0A0A0B`, red left edge + red countdown bar, moth icon, title + one line

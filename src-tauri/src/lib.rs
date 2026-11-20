@@ -19,6 +19,7 @@ mod history;
 mod ipc;
 mod log;
 mod monitors;
+mod organize;
 mod look;
 mod media;
 mod net;
@@ -247,6 +248,34 @@ fn tidy_preview() -> Value {
 }
 
 #[tauri::command]
+async fn organize_preview() -> Value {
+    tauri::async_runtime::spawn_blocking(organize::preview).await.unwrap_or(Value::Null)
+}
+
+#[tauri::command]
+async fn organize_run() -> Result<usize, String> {
+    let moved = tauri::async_runtime::spawn_blocking(|| organize::run(std::time::Duration::ZERO)).await.map_err(|e| e.to_string())??;
+    let n = moved.len();
+    let mut kinds: Vec<&str> = moved.iter().map(|m| m.1.as_str()).collect();
+    kinds.sort();
+    kinds.dedup();
+    ui_toast::local("Desktop organized", &format!("{n} apps sorted into {} folders", kinds.len()));
+    Ok(n)
+}
+
+#[tauri::command]
+fn organize_undo() -> Result<usize, String> {
+    let n = organize::undo()?;
+    ui_toast::local("Desktop put back", &format!("{n} apps back where they were"));
+    Ok(n)
+}
+
+#[tauri::command]
+fn organize_set_kind(file: String, kind: String) -> Result<(), String> {
+    organize::set_kind(&file, &kind)
+}
+
+#[tauri::command]
 fn tidy_run() -> Result<usize, String> {
     let n = tidy::run(std::time::Duration::ZERO)?;
     ui_toast::local("Desktop tidied", &format!("{n} files sorted into folders"));
@@ -423,6 +452,7 @@ fn run_app() {
             userjob::start_app_worker();
             widgets::start(app.handle().clone());
             tidy::start_auto();
+            organize::start_auto();
             let helper = app.path().resolve("nightmoth_tap.dll", tauri::path::BaseDirectory::Resource).ok();
             taskbar::start(helper);
             roblox::start_auto();
@@ -476,6 +506,10 @@ fn run_app() {
             tidy_preview,
             tidy_run,
             tidy_undo,
+            organize_preview,
+            organize_run,
+            organize_undo,
+            organize_set_kind,
             storage_scan,
             storage_recycle,
             roblox_state,

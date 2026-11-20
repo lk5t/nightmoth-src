@@ -45,7 +45,7 @@ function snack(msg: string, err = false) {
 }
 
 /** Commands handled by the app itself; everything else runs in the elevated engine. */
-const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo",
+const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo", "organize_preview", "organize_run", "organize_undo", "organize_set_kind",
   "storage_scan", "storage_recycle", "roblox_state", "roblox_apply", "roblox_restore", "monitors_list", "monitor_set",
   "look_export_file", "look_import_file", "cursor_set", "theme_apps_now"]);
 
@@ -421,7 +421,10 @@ PAGES.look = {
       <div class="section-title"><h2>Screens</h2><span class="muted">A different wallpaper on each screen</span></div>
       <div class="card" id="screens">${loading("Finding screens")}</div>
 
-      <div class="section-title"><h2>Tidy desktop</h2><span class="muted">Loose files sorted into folders · shortcuts stay</span></div>
+      <div class="section-title"><h2>Organize desktop</h2><span class="muted">Every app sorted into Games, Social, Browsers…</span></div>
+      <div class="card" id="organize">${loading("Looking at every app on your desktop")}</div>
+
+      <div class="section-title"><h2>Tidy desktop</h2><span class="muted">Loose files sorted into folders by type</span></div>
       <div class="card" id="tidy">${loading("Looking at your desktop")}</div>
 
       <div class="section-title"><h2>Desktop & taskbar</h2></div>
@@ -569,6 +572,39 @@ PAGES.look = {
         go("look");
       }));
     }).catch(() => { const box = q("#screens"); if (box) box.innerHTML = `<p class="sub" style="margin:0">Couldn't read your screens.</p>`; });
+
+    const drawOrganize = async () => {
+      const box = q("#organize");
+      if (!box) return;
+      const o = await raw<Any>("organize_preview").catch(() => null);
+      if (!o) { box.innerHTML = `<div class="empty">Couldn't read the desktop.</div>`; return; }
+      const apps: Any[] = o.apps;
+      const loose = apps.filter((x) => !x.sorted).length;
+      const groups = (o.kinds as string[]).map((k) => [k, apps.filter((x) => x.kind === k)] as [string, Any[]]).filter((g) => g[1].length);
+      box.innerHTML = `<div class="row between"><div><h3>${apps.length ? `${apps.length} apps on your desktop${loose ? ` · ${loose} not sorted yet` : " · all sorted"}` : "No apps on your desktop"}</h3>
+          <p class="sub" style="margin:0">Each app goes into a folder for its kind, worked out from its name, where it's installed, its publisher and more. Nothing is left over: anything unclear goes into "Other apps". Move an app between folders (here or yourself) and Nightmoth remembers.</p></div>
+          <div class="row">${o.can_undo ? `<button class="btn" id="oundo">Undo</button>` : ""}<button class="btn primary" id="orun" ${loose ? "" : "disabled"}>Organize now</button></div></div>
+        <div class="item" style="margin-top:10px;border-top:1px solid var(--border);padding-top:12px"><div class="info"><div class="name">Organize automatically</div><div class="desc">New apps get sorted within a minute of appearing on your desktop. Part of Autopilot.</div></div>${toggle('id="oauto"', c.organize_auto)}</div>
+        ${groups.map(([k, list]) => `<div class="section-title" style="margin:16px 0 6px"><h2>${esc(k)}</h2><span class="muted">${list.length}</span></div>
+          <div class="list">${list.map((x) => `<div class="item"><div class="info"><div class="name">${esc(x.name)} ${x.public ? `<span class="badge">All users</span>` : ""} ${x.sorted ? "" : `<span class="badge red">Not sorted</span>`}</div><div class="desc">${esc(x.why)}</div></div>
+            <select data-okind="${esc(x.file)}">${(o.kinds as string[]).map((kk) => `<option ${kk === x.kind ? "selected" : ""}>${esc(kk)}</option>`).join("")}</select></div>`).join("")}</div>`).join("")}`;
+      const run = document.getElementById("orun") as HTMLButtonElement | null;
+      if (run) run.onclick = () => busy(run, async () => { const n = await call<number>("organize_run"); snack(`${n} apps sorted`); await drawOrganize(); });
+      const un = document.getElementById("oundo") as HTMLButtonElement | null;
+      if (un) un.onclick = () => busy(un, async () => { const n = await call<number>("organize_undo"); snack(`${n} apps put back`); await drawOrganize(); });
+      q<HTMLInputElement>("#oauto").onchange = async (e) => {
+        const on = (e.target as HTMLInputElement).checked;
+        c.organize_auto = on;
+        await setCfg({ organize_auto: on });
+        if (on && loose) { const n = await call<number>("organize_run"); snack(`Organizing on · ${n} apps sorted`); await drawOrganize(); } else snack("Saved");
+      };
+      qa<HTMLSelectElement>("[data-okind]", box).forEach((sel) => (sel.onchange = async () => {
+        await call("organize_set_kind", { file: sel.dataset.okind, kind: sel.value });
+        snack(`Moved to ${sel.value} — remembered`);
+        await drawOrganize();
+      }));
+    };
+    drawOrganize();
 
     const drawTidy = async () => {
       const box = q("#tidy");

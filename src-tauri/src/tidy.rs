@@ -42,6 +42,10 @@ fn group_of(p: &Path) -> Option<&'static str> {
     if KEEP_EXT.contains(&ext.as_str()) {
         return None;
     }
+    // programs (not setup files) are apps: Organize desktop handles those
+    if ext == "exe" && crate::organize::is_app_file(p) {
+        return None;
+    }
     Some(GROUPS.iter().find(|(_, exts)| exts.contains(&ext.as_str())).map(|(g, _)| *g).unwrap_or("Other"))
 }
 
