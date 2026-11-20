@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 use crate::state::lock;
 use crate::toast::Toast;
@@ -51,12 +51,25 @@ pub fn done() {
     }
 }
 
-fn position(win: &tauri::WebviewWindow) {
+/// Pop-up window size in logical pixels (the card plus room for its shadow).
+pub const W: f64 = 392.0;
+pub const H: f64 = 112.0;
+
+/// Pin the pop-up to the bottom-right corner of the primary screen, just above the taskbar.
+/// The size is set from the primary monitor's scaling, so it's never cut off on 125–200 % screens.
+fn position(app: &AppHandle, win: &tauri::WebviewWindow) {
     let (_, _, right, bottom) = crate::win::work_area();
-    let scale = win.scale_factor().unwrap_or(1.0);
-    let size = win.outer_size().map(|s| (s.width as i32, s.height as i32)).unwrap_or((380, 104));
-    let margin = (14.0 * scale) as i32;
-    let _ = win.set_position(PhysicalPosition::new(right - size.0 - margin, bottom - size.1 - margin));
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .or_else(|| win.scale_factor().ok())
+        .unwrap_or(1.0);
+    let (w, h) = ((W * scale).round() as i32, (H * scale).round() as i32);
+    let margin = (8.0 * scale).round() as i32;
+    let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
+    let _ = win.set_position(PhysicalPosition::new(right - w - margin, bottom - h - margin));
 }
 
 fn worker(app: AppHandle, done: Receiver<()>) {
@@ -75,9 +88,11 @@ fn worker(app: AppHandle, done: Receiver<()>) {
         }
         while done.try_recv().is_ok() {}
         if let Some(win) = app.get_webview_window("toast") {
-            position(&win);
+            position(&app, &win);
             let _ = win.show();
             let _ = win.set_always_on_top(true);
+            // showing can move it to the monitor's DPI: pin it again
+            position(&app, &win);
         }
         let _ = app.emit_to("toast", "toast", t.clone());
         if !t.id.starts_with("local") {

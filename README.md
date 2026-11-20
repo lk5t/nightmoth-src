@@ -16,6 +16,12 @@ npx tauri build   # installer in src-tauri/target/release/bundle/nsis/
 
 Needs Rust (stable), Node 22, and the Visual Studio C++ build tools.
 
+## Two processes
+
+- **App** (`nightmoth.exe`, normal user): window, tray, pop-ups, widgets, taskbar look, desktop tidy. Files in `%APPDATA%\Nightmoth`.
+- **Engine** (`nightmoth.exe --engine`, admin, started by the "Nightmoth Engine" scheduled task): every system change and Autopilot. Files in `%ProgramData%\Nightmoth`, which only admins can write to.
+- The engine never runs anything a normal program could have planted (per-user uninstallers, relaunching apps closed for a game) — those go back to the app as user jobs.
+
 ## Layout
 
 | Path | What |
@@ -27,6 +33,12 @@ Needs Rust (stable), Node 22, and the Visual Studio C++ build tools.
 | `src-tauri/src/apps.rs` | Installed apps, usage, automatic unused-app cleaner |
 | `src-tauri/src/games.rs` | Game detection + boost/restore |
 | `src-tauri/src/autopilot.rs` | Background loop (hogs, cleanup schedule, weekly report) |
-| `src-tauri/src/toast.rs` | Bottom-right pop-ups |
+| `src-tauri/src/toast.rs` | Bottom-right pop-ups (engine queue; always on) |
+| `src-tauri/src/ui_toast.rs` | Shows the pop-ups bottom-right (app side) |
+| `src-tauri/src/widgets.rs` | Desktop widgets: clock, calendar, system, week (app side) |
+| `src-tauri/src/taskbar.rs` | Invisible / tinted-glass taskbar background (app side) |
+| `src-tauri/src/tidy.rs` | Tidy desktop: sort loose files into folders, undo (app side) |
+| `src-tauri/src/userjob.rs` | Jobs the engine hands to the app so they run *without* admin rights |
+| `src-tauri/src/ipc.rs` | App ↔ engine link (only Nightmoth's own exe is answered) |
 | `src-tauri/src/changelog.rs` | Every change recorded + undo |
 | `src/` | UI (main window + pop-up window) |

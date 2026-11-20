@@ -233,9 +233,10 @@ pub fn end_boost(announce: bool) {
             let _ = win::reg_delete(Hive::HKCU, NOTIF, "ToastEnabled");
         }
     }
+    // reopen them as the normal user (never with the engine's admin rights)
     for exe in &s.closed {
         if Path::new(exe).exists() {
-            let _ = std::process::Command::new(exe).spawn();
+            let _ = crate::userjob::run("launch", exe, None);
         }
     }
     let mins = ((now() - s.started).max(0) / 60) as u64;

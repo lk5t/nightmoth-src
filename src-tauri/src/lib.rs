@@ -20,6 +20,10 @@ mod state;
 mod stats;
 mod toast;
 mod ui_toast;
+mod taskbar;
+mod tidy;
+mod userjob;
+mod widgets;
 mod win;
 
 use serde_json::{json, Value};
@@ -46,9 +50,11 @@ pub fn main_entry() {
     log::install_panic_hook();
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--engine") {
+        win::set_elevated_role();
         log::set_role("engine");
         run_engine();
     } else if args.iter().any(|a| a == "--setup-engine") {
+        win::set_elevated_role();
         log::set_role("setup");
         match ipc::setup_engine() {
             Ok(_) => log::log("engine task registered"),
@@ -72,6 +78,13 @@ fn run_engine() {
         return;
     }
     state::init();
+    // 0.3: the taskbar no longer hides; it stays put with a see-through background
+    if !state::cfg().taskbar_migrated {
+        if win::taskbar_autohide() {
+            let _ = look::desktop_set("autohide", &json!(false));
+        }
+        state::with_cfg(|c| c.taskbar_migrated = true);
+    }
     autopilot::run();
     ipc::serve(api::dispatch);
 }
@@ -107,7 +120,7 @@ fn create_toast(app: &AppHandle) -> tauri::Result<()> {
     let t = Instant::now();
     WebviewWindowBuilder::new(app, "toast", WebviewUrl::App("toast.html".into()))
         .title("Nightmoth")
-        .inner_size(380.0, 104.0)
+        .inner_size(ui_toast::W, ui_toast::H)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -208,6 +221,35 @@ fn ui_log(msg: String) {
 }
 
 #[tauri::command]
+fn widgets_ready() {
+    widgets::page_ready();
+}
+
+#[tauri::command]
+fn widgets_size(w: f64, h: f64) {
+    widgets::set_size(w, h);
+}
+
+#[tauri::command]
+fn tidy_preview() -> Value {
+    tidy::preview()
+}
+
+#[tauri::command]
+fn tidy_run() -> Result<usize, String> {
+    let n = tidy::run(std::time::Duration::ZERO)?;
+    ui_toast::local("Desktop tidied", &format!("{n} files sorted into folders"));
+    Ok(n)
+}
+
+#[tauri::command]
+fn tidy_undo() -> Result<usize, String> {
+    let n = tidy::undo()?;
+    ui_toast::local("Desktop restored", &format!("{n} files put back"));
+    Ok(n)
+}
+
+#[tauri::command]
 fn toast_done() {
     ui_toast::done();
 }
@@ -253,6 +295,10 @@ fn run_app() {
                 log::log(&format!("tray failed: {e}"));
             }
             ui_toast::start(app.handle().clone());
+            userjob::start_app_worker();
+            widgets::start(app.handle().clone());
+            tidy::start_auto();
+            taskbar::start();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(600));
@@ -297,6 +343,11 @@ fn run_app() {
             ui_log,
             toast_done,
             toast_action,
+            widgets_ready,
+            widgets_size,
+            tidy_preview,
+            tidy_run,
+            tidy_undo,
             autostart_get,
             autostart_set,
             quit_app,

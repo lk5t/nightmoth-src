@@ -6,8 +6,11 @@
 //!   runs Autopilot. It's started by the "Nightmoth Engine" scheduled task (set up
 //!   once with a UAC prompt), so later launches need no prompt.
 //!
-//! They talk over 127.0.0.1 with a random port and a random secret token, stored in
-//! the user's own AppData. The engine only accepts its fixed list of commands.
+//! They talk over 127.0.0.1 with a random port and a random secret token, kept in
+//! `%ProgramData%\Nightmoth\engine.json` (only admins can write there). Because any
+//! program running as the same user could read that token, the engine also checks
+//! which process is on the other end of every connection and only answers
+//! Nightmoth's own exe. It only accepts its fixed list of commands.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,7 +20,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::log::log;
-use crate::win::{self, data_dir, wide};
+use crate::win::{self, wide};
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -47,7 +50,77 @@ struct Response {
 }
 
 fn endpoint_path() -> std::path::PathBuf {
-    data_dir().join("engine.json")
+    win::engine_dir().join("engine.json")
+}
+
+/// Which process owns the client end of a loopback connection to `server_port`?
+fn peer_pid(peer: SocketAddr, server_port: u16) -> Option<u32> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
+    };
+    const AF_INET: u32 = 2;
+    let mut size: u32 = 0;
+    unsafe {
+        GetExtendedTcpTable(std::ptr::null_mut(), &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+    }
+    for _ in 0..4 {
+        // u32 buffer keeps the table correctly aligned
+        let mut buf = vec![0u32; (size as usize / 4) + 256];
+        let mut len = (buf.len() * 4) as u32;
+        let rc = unsafe {
+            GetExtendedTcpTable(buf.as_mut_ptr() as *mut _, &mut len, 0, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0)
+        };
+        if rc == 122 {
+            // ERROR_INSUFFICIENT_BUFFER: the table grew, try again
+            size = len;
+            continue;
+        }
+        if rc != 0 {
+            return None;
+        }
+        let rows: &[MIB_TCPROW_OWNER_PID] = unsafe {
+            let table = buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID;
+            std::slice::from_raw_parts((*table).table.as_ptr(), (*table).dwNumEntries as usize)
+        };
+        return rows
+            .iter()
+            .find(|r| u16::from_be(r.dwLocalPort as u16) == peer.port() && u16::from_be(r.dwRemotePort as u16) == server_port)
+            .map(|r| r.dwOwningPid);
+    }
+    None
+}
+
+/// Full path of a process's exe.
+fn pid_exe(pid: u32) -> Option<String> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+/// Is the client Nightmoth itself (the same exe file as this engine)?
+fn trusted_client(peer: SocketAddr, server_port: u16) -> bool {
+    let Ok(me) = std::env::current_exe() else { return false };
+    let me = me.to_string_lossy().to_lowercase();
+    match peer_pid(peer, server_port).and_then(pid_exe) {
+        Some(exe) => exe.to_lowercase() == me,
+        None => false,
+    }
+}
+
+fn same_token(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 // ================================================================== engine side
@@ -62,21 +135,29 @@ pub fn serve(dispatch: fn(&str, &Value) -> Result<Value, String>) {
         }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let token: String = (0..32).map(|_| format!("{:x}", rand::random::<u8>() % 16)).collect();
+    let token: String = (0..48).map(|_| format!("{:x}", rand::random::<u8>() % 16)).collect();
     let ep = Endpoint { port, token: token.clone(), pid: std::process::id() };
-    let _ = std::fs::write(endpoint_path(), serde_json::to_string(&ep).unwrap_or_default());
+    let _ = win::data_dir(); // creates and locks the engine folder
+    if let Err(e) = std::fs::write(endpoint_path(), serde_json::to_string(&ep).unwrap_or_default()) {
+        log(&format!("engine: can't write endpoint: {e}"));
+    }
     log(&format!("engine ready on port {port}"));
 
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let token = token.clone();
-        std::thread::spawn(move || handle(stream, &token, dispatch));
+        std::thread::spawn(move || handle(stream, &token, port, dispatch));
     }
 }
 
-fn handle(stream: TcpStream, token: &str, dispatch: fn(&str, &Value) -> Result<Value, String>) {
-    // only local connections
-    if !stream.peer_addr().map(|a| a.ip().is_loopback()).unwrap_or(false) {
+fn handle(stream: TcpStream, token: &str, port: u16, dispatch: fn(&str, &Value) -> Result<Value, String>) {
+    // only local connections, and only from Nightmoth's own exe
+    let Ok(peer) = stream.peer_addr() else { return };
+    if !peer.ip().is_loopback() {
+        return;
+    }
+    if !trusted_client(peer, port) {
+        log(&format!("engine: refused a connection from another program (port {})", peer.port()));
         return;
     }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -89,7 +170,7 @@ fn handle(stream: TcpStream, token: &str, dispatch: fn(&str, &Value) -> Result<V
         return;
     }
     let resp = match serde_json::from_str::<Request>(&line) {
-        Ok(req) if req.token == token => {
+        Ok(req) if same_token(&req.token, token) => {
             let res = std::panic::catch_unwind(|| dispatch(&req.cmd, &req.args))
                 .unwrap_or_else(|_| Err(format!("Engine error while running {}", req.cmd)));
             match res {

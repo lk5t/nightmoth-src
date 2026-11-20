@@ -12,6 +12,8 @@ pub struct Look {
     pub style: String,
     /// Index into the palette chosen with Shuffle (None = automatic pick).
     pub accent_index: Option<usize>,
+    /// Calmest 3x3 cell for desktop widgets (filled in on first use).
+    pub calm_cell: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -98,11 +100,29 @@ pub struct Config {
     pub pending_boost: Option<BoostSession>,
     pub ultimate_guid: String,
 
-    // toasts
-    pub toast_enabled: bool,
+    // toasts (always on; only the duration can change)
     pub toast_ms: u64,
-    pub toast_quiet: bool,
-    pub toast_off: Vec<String>,
+
+    // desktop widgets
+    pub widgets_on: bool,
+    /// Which widgets, in order: clock, calendar, system, week
+    pub widgets: Vec<String>,
+    /// "auto" = the calmest part of the wallpaper, or one of the 9 spots (top left … bottom right)
+    pub widget_spot: String,
+    /// "glass" | "solid" | "minimal"
+    pub widget_style: String,
+    /// Colour widgets with the wallpaper's accent (off = Nightmoth red)
+    pub widget_accent: bool,
+    pub widget_scale: f32,
+
+    /// Taskbar background: "clear" (invisible, only icons show) | "tint" (accent glass) | "normal"
+    pub taskbar_style: String,
+    /// 0.3 replaced auto-hide with the see-through taskbar (done once)
+    pub taskbar_migrated: bool,
+
+    // desktop tidy
+    pub tidy_auto: bool,
+    pub tidy_last: i64,
 
     // lists
     pub keep_list: Vec<String>,
@@ -144,16 +164,23 @@ impl Default for Config {
             hog_watcher: true,
             hog_cpu: 25.0,
             hog_ram_mb: 1536,
-            hog_auto_lower: false,
+            hog_auto_lower: true,
             game_booster: true,
             boost_close: vec![],
             games: HashMap::new(),
             pending_boost: None,
             ultimate_guid: String::new(),
-            toast_enabled: true,
             toast_ms: 5000,
-            toast_quiet: false,
-            toast_off: vec![],
+            widgets_on: true,
+            widgets: vec!["clock".into(), "calendar".into(), "system".into()],
+            widget_spot: "auto".into(),
+            widget_style: "glass".into(),
+            widget_accent: true,
+            widget_scale: 1.0,
+            taskbar_style: "clear".into(),
+            taskbar_migrated: false,
+            tidy_auto: true,
+            tidy_last: 0,
             keep_list: vec![],
             startup_allow: vec![],
             known_startup: vec![],
@@ -169,9 +196,7 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Config {
-        let p = data_dir().join("config.json");
-        std::fs::read_to_string(&p)
-            .ok()
+        crate::win::read_state_file("config.json")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     }

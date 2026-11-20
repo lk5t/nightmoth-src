@@ -21,14 +21,11 @@ pub struct Toast {
 static QUEUE: Mutex<VecDeque<Toast>> = Mutex::new(VecDeque::new());
 static SHOWN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Kinds that ignore quiet mode because they let you stop something.
-const ALWAYS: &[&str] = &["remove"];
-
 fn next_id() -> String {
     format!("t{}{}", crate::win::now(), rand::random::<u32>())
 }
 
-/// Queue a pop-up. `kind` is used for per-type on/off settings.
+/// Queue a pop-up. Pop-ups are always shown: every action Nightmoth takes is announced.
 pub fn show(kind: &str, title: &str, body: &str) {
     push(kind, title, body, None);
 }
@@ -41,10 +38,6 @@ pub fn show_action(kind: &str, title: &str, body: &str, label: &str, action: Act
 fn push(kind: &str, title: &str, body: &str, action: Option<(String, Action)>) -> String {
     let c = cfg();
     let id = next_id();
-    let forced = ALWAYS.contains(&kind);
-    if !forced && (!c.toast_enabled || c.toast_quiet || c.toast_off.iter().any(|k| k == kind)) {
-        return id;
-    }
     let label = action.as_ref().map(|(l, _)| l.clone());
     if let Some((_, f)) = action {
         lock(&core().actions).insert(id.clone(), f);

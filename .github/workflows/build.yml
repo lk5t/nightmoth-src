@@ -56,16 +56,24 @@ jobs:
           Get-CimInstance Win32_Process -Filter "Name='nightmoth.exe'" | ForEach-Object { Write-Host "  $($_.ProcessId) $($_.CommandLine)" }
           Write-Host "Scheduled task:"
           schtasks /Query /TN "Nightmoth Engine" 2>&1 | Write-Host
-          Write-Host "----- nightmoth.log -----"
+          Write-Host "----- app log (AppData) -----"
           Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -ErrorAction SilentlyContinue
-          Write-Host "----- crash.log -----"
+          Write-Host "----- engine log (ProgramData) -----"
+          Get-Content "$env:ProgramData\Nightmoth\nightmoth.log" -ErrorAction SilentlyContinue
+          Write-Host "----- crash logs -----"
           Get-Content "$env:APPDATA\Nightmoth\crash.log" -ErrorAction SilentlyContinue
+          Get-Content "$env:ProgramData\Nightmoth\crash.log" -ErrorAction SilentlyContinue
+          Write-Host "----- engine folder permissions -----"
+          icacls "$env:ProgramData\Nightmoth" | Write-Host
           $log = Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -Raw -ErrorAction SilentlyContinue
+          $elog = Get-Content "$env:ProgramData\Nightmoth\nightmoth.log" -Raw -ErrorAction SilentlyContinue
           Get-Process nightmoth -ErrorAction SilentlyContinue | Stop-Process -Force
           if (-not $alive) { Write-Error "Nightmoth exited during startup"; exit 1 }
           if ($log -notmatch "main window ready") { Write-Error "Main window UI never loaded"; exit 1 }
-          if ($log -notmatch "engine ready") { Write-Error "Engine never started"; exit 1 }
+          if ($elog -notmatch "engine ready") { Write-Error "Engine never started"; exit 1 }
+          if ($elog -match "refused a connection") { Write-Error "Engine refused Nightmoth's own app"; exit 1 }
           if ($log -notmatch "app: engine connected") { Write-Error "App never connected to the engine"; exit 1 }
+          if ($log -notmatch "widgets window created") { Write-Error "Desktop widgets never appeared"; exit 1 }
           Write-Host "SMOKE TEST PASSED"
 
       # Every push to main refreshes the "latest" release in this repo.

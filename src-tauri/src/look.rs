@@ -185,6 +185,8 @@ pub struct Analysis {
     pub accent: String,
     pub accent_index: usize,
     pub empty_area: String,
+    /// 0..9 (row-major 3x3 grid): the calmest spot for desktop widgets
+    pub calm_cell: usize,
 }
 
 fn kmeans(px: &[Rgb], k: usize) -> Vec<(Rgb, usize)> {
@@ -290,6 +292,14 @@ pub fn analyze(path: &str) -> Result<Analysis, String> {
     }
     let names = ["top left", "top", "top right", "left", "center", "right", "bottom left", "bottom", "bottom right"];
     let calm = cells.iter().enumerate().min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|x| x.0).unwrap_or(0);
+    // widgets look odd dead centre or over the taskbar, so those spots need to be much calmer to win
+    let widget_cell = cells
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i, v * if i == 4 { 1.8 } else if i == 7 { 1.4 } else { 1.0 }))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|x| x.0)
+        .unwrap_or(2);
 
     Ok(Analysis {
         palette: palette.iter().map(|c| to_hex(*c)).collect(),
@@ -301,6 +311,7 @@ pub fn analyze(path: &str) -> Result<Analysis, String> {
         accent: to_hex(fix_accent(palette[best], dark)),
         accent_index: best,
         empty_area: names[calm].into(),
+        calm_cell: widget_cell,
     })
 }
 
@@ -432,6 +443,7 @@ pub fn apply(path: &str, announce: bool) -> Result<Applied, String> {
         entry.dark = analysis.dark;
         entry.palette = analysis.palette.clone();
         entry.style = analysis.style.clone();
+        entry.calm_cell = Some(analysis.calm_cell);
         cf.current_wallpaper = wall.clone();
     });
 
@@ -481,6 +493,68 @@ pub fn shuffle() -> Result<Applied, String> {
     apply(&wall, true)
 }
 
+// ------------------------------------------------------------------ desktop widgets
+
+pub const SPOTS: [&str; 9] = ["top left", "top", "top right", "left", "center", "right", "bottom left", "bottom", "bottom right"];
+
+#[derive(Serialize, Clone)]
+pub struct WidgetsState {
+    pub on: bool,
+    pub widgets: Vec<String>,
+    pub cell: usize,
+    pub auto: bool,
+    pub style: String,
+    pub accent: String,
+    pub dark: bool,
+    pub scale: f32,
+    pub boosting: bool,
+    pub week: crate::config::Stats,
+    pub taskbar: String,
+    pub taskbar_accent: String,
+}
+
+/// What the desktop widgets should look like and where they go.
+pub fn widgets_state() -> WidgetsState {
+    let c = cfg();
+    let wall = if c.current_wallpaper.is_empty() { win::current_wallpaper() } else { c.current_wallpaper.clone() };
+    let look = c.looks.get(&wall).cloned();
+    let auto = !SPOTS.contains(&c.widget_spot.as_str());
+    let cell = if auto {
+        match look.as_ref().and_then(|l| l.calm_cell) {
+            Some(cell) => cell,
+            None if !wall.is_empty() => match analyze(&wall) {
+                Ok(a) => {
+                    with_cfg(|cf| cf.looks.entry(wall.clone()).or_insert_with(Look::default).calm_cell = Some(a.calm_cell));
+                    a.calm_cell
+                }
+                Err(_) => 2,
+            },
+            None => 2,
+        }
+    } else {
+        SPOTS.iter().position(|s| *s == c.widget_spot).unwrap_or(2)
+    };
+    let look_accent = look.as_ref().map(|l| l.accent.clone()).filter(|a| !a.is_empty()).unwrap_or_else(|| "#B3141C".into());
+    let accent = match (&look, c.widget_accent) {
+        (Some(l), true) if !l.accent.is_empty() => l.accent.clone(),
+        _ => "#B3141C".into(),
+    };
+    WidgetsState {
+        on: c.widgets_on,
+        widgets: c.widgets.clone(),
+        cell,
+        auto,
+        style: c.widget_style.clone(),
+        accent,
+        dark: look.map(|l| l.dark).unwrap_or(true),
+        scale: c.widget_scale.clamp(0.7, 1.6),
+        boosting: core().boosting.load(std::sync::atomic::Ordering::Relaxed),
+        week: c.stats.clone(),
+        taskbar: c.taskbar_style.clone(),
+        taskbar_accent: look_accent,
+    }
+}
+
 // ------------------------------------------------------------------ taskbar & desktop
 
 #[derive(Serialize, Clone)]
@@ -491,6 +565,7 @@ pub struct DesktopState {
     pub taskview: bool,
     pub widgets: bool,
     pub icons: bool,
+    pub taskbar: String,
 }
 
 pub fn desktop_state() -> DesktopState {
@@ -501,6 +576,7 @@ pub fn desktop_state() -> DesktopState {
         taskview: win::reg_dword(Hive::HKCU, ADVANCED, "ShowTaskViewButton").unwrap_or(1) == 1,
         widgets: win::reg_dword(Hive::HKCU, ADVANCED, "TaskbarDa").unwrap_or(1) == 1,
         icons: win::desktop_icons_visible(),
+        taskbar: cfg().taskbar_style,
     }
 }
 
@@ -535,6 +611,16 @@ pub fn desktop_set(key: &str, value: &serde_json::Value) -> Result<(), String> {
             );
             title = if b { "Widgets button shown" } else { "Widgets button hidden" };
         }
+        "taskbar" => {
+            let style = match value.as_str().unwrap_or("normal") {
+                "clear" => "clear",
+                "tint" => "tint",
+                _ => "normal",
+            };
+            with_cfg(|c| c.taskbar_style = style.into());
+            // the app re-applies it continuously; nothing to record
+            return Ok(());
+        }
         "icons" => {
             let before = win::desktop_icons_visible();
             ch.extend(changelog::reg(Hive::HKCU, ADVANCED, "HideIcons", RegVal::Dword(if b { 0 } else { 1 }))?);
@@ -559,7 +645,8 @@ pub fn preset(id: &str) -> Result<String, String> {
     let name = match id {
         "void" => {
             apply(&crate::gallery::ensure("void")?, false)?;
-            set("autohide", json!(true));
+            set("autohide", json!(false));
+            set("taskbar", json!("clear"));
             set("center", json!(true));
             set("search", json!(0));
             set("taskview", json!(false));
@@ -569,7 +656,8 @@ pub fn preset(id: &str) -> Result<String, String> {
         }
         "neon" => {
             apply(&crate::gallery::ensure("neon")?, false)?;
-            set("autohide", json!(true));
+            set("autohide", json!(false));
+            set("taskbar", json!("tint"));
             set("center", json!(true));
             set("search", json!(1));
             set("taskview", json!(false));
@@ -579,6 +667,7 @@ pub fn preset(id: &str) -> Result<String, String> {
         }
         "clean" => {
             set("autohide", json!(false));
+            set("taskbar", json!("clear"));
             set("center", json!(true));
             set("search", json!(1));
             set("taskview", json!(false));
@@ -588,6 +677,7 @@ pub fn preset(id: &str) -> Result<String, String> {
         }
         "default" => {
             set("autohide", json!(false));
+            set("taskbar", json!("normal"));
             set("center", json!(true));
             set("search", json!(2));
             set("taskview", json!(true));

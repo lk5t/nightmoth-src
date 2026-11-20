@@ -371,12 +371,85 @@ pub fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_default()
 }
 
-pub fn data_dir() -> std::path::PathBuf {
+static ELEVATED_ROLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SECURED: std::sync::Once = std::sync::Once::new();
+
+/// Call once at startup in the elevated roles (engine, setup) before anything is written.
+pub fn set_elevated_role() {
+    ELEVATED_ROLE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The user's own folder: `%APPDATA%\Nightmoth`. Only the normal-user app writes here.
+pub fn user_dir() -> std::path::PathBuf {
     let p = std::path::PathBuf::from(env("APPDATA")).join("Nightmoth");
     let _ = std::fs::create_dir_all(&p);
     p
 }
 
+/// The engine's folder: `%ProgramData%\Nightmoth`. Only admins can write to it, everyone can read it,
+/// so nothing a normal program writes can steer the elevated engine.
+pub fn engine_dir() -> std::path::PathBuf {
+    let base = env("ProgramData");
+    let base = if base.is_empty() { r"C:\ProgramData".to_string() } else { base };
+    std::path::PathBuf::from(base).join("Nightmoth")
+}
+
+/// Create the engine folder and lock it down: owner Administrators, write access for
+/// SYSTEM and Administrators only, read for Users. A junction planted there is removed first.
+fn secure_engine_dir(p: &std::path::Path) {
+    if let Ok(m) = std::fs::symlink_metadata(p) {
+        if m.file_type().is_symlink() {
+            let _ = std::fs::remove_dir(p);
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    let _ = std::fs::create_dir_all(p);
+    let dir = p.to_string_lossy().to_string();
+    let _ = run("icacls.exe", &[&dir, "/setowner", "*S-1-5-32-544", "/T", "/C", "/L", "/Q"]);
+    let _ = run(
+        "icacls.exe",
+        &[&dir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/T", "/C", "/L", "/Q"],
+    );
+}
+
+/// Where this process keeps its files: the locked engine folder for the elevated
+/// roles, the user's AppData folder for the app.
+pub fn data_dir() -> std::path::PathBuf {
+    if ELEVATED_ROLE.load(std::sync::atomic::Ordering::Relaxed) {
+        let p = engine_dir();
+        SECURED.call_once(|| secure_engine_dir(&p));
+        let _ = std::fs::create_dir_all(&p);
+        p
+    } else {
+        user_dir()
+    }
+}
+
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+/// Read one of the engine's state files. Before 0.3 they lived in the user's AppData:
+/// if the new copy is missing, the old one is copied over once.
+pub fn read_state_file(name: &str) -> Option<String> {
+    let p = data_dir().join(name);
+    if let Ok(s) = std::fs::read_to_string(&p) {
+        return Some(s);
+    }
+    let old = std::path::PathBuf::from(env("APPDATA")).join("Nightmoth").join(name);
+    let m = std::fs::symlink_metadata(&old).ok()?;
+    if !m.is_file() || m.len() > 32 * 1024 * 1024 {
+        return None;
+    }
+    let s = std::fs::read_to_string(&old).ok()?;
+    let _ = std::fs::write(&p, &s);
+    Some(s)
+}
+
+/// (name, raw bytes) of every value in a key.
+pub fn reg_values_raw(h: Hive, path: &str) -> Vec<(String, Vec<u8>)> {
+    match root(h).open_subkey_with_flags(path, KEY_READ) {
+        Ok(k) => k.enum_values().filter_map(|x| x.ok()).map(|(n, v)| (n, v.bytes.to_vec())).collect(),
+        Err(_) => vec![],
+    }
 }

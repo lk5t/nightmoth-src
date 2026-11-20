@@ -158,6 +158,7 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
         }
         "preset_apply" => ok(look::preset(&arg::<String>(a, "id")?)?),
         "gallery_list" => ok(gallery::list()?),
+        "widgets_state" => ok(look::widgets_state()),
         "slideshow_set" => {
             let on: bool = arg(a, "on")?;
             let folder: String = arg(a, "folder")?;
@@ -306,6 +307,16 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
             toast::action(&arg::<String>(a, "id")?);
             ok(true)
         }
+        // ---------------------------------------------------------- normal-user jobs
+        "user_jobs_take" => ok(crate::userjob::take()),
+        "user_job_done" => {
+            let id: String = arg(a, "id")?;
+            let code: i32 = arg(a, "code").unwrap_or(-1);
+            let error: String = arg(a, "error").unwrap_or_default();
+            crate::userjob::done(&id, code, &error);
+            ok(true)
+        }
+
         "toast_test" => {
             toast::show_action("test", "Nightmoth pop-up", "This is how Autopilot tells you what it did", "Nice", Box::new(|| {}));
             ok(true)

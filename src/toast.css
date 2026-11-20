@@ -9,17 +9,17 @@ html, body {
 
 .toast {
   position: absolute;
-  inset: 6px;
+  inset: 10px;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 14px 0 16px;
-  background: #0a0a0b;
-  border: 1px solid #26262a;
-  border-left: 3px solid #e10600;
+  background: #0b0b0d;
+  border: 1px solid #1f1f24;
+  border-left: 3px solid #b8202a;
   border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6), 0 0 22px rgba(225, 6, 0, 0.18);
-  color: #f2f2f3;
+  box-shadow: 0 3px 9px rgba(0, 0, 0, 0.55);
+  color: #ececef;
   overflow: hidden;
   opacity: 0;
   transform: translateX(110%);
@@ -48,7 +48,7 @@ html, body {
 }
 .body {
   font-size: 12px;
-  color: #8a8a92;
+  color: #82828b;
   margin-top: 3px;
   line-height: 1.35;
   display: -webkit-box;
@@ -63,7 +63,7 @@ button {
 }
 #t-action {
   flex: none;
-  background: #e10600;
+  background: linear-gradient(180deg, #b0161f, #a3121a);
   color: #fff;
   font-weight: 600;
   font-size: 12.5px;
@@ -71,8 +71,7 @@ button {
   border-radius: 7px;
 }
 #t-action:hover {
-  background: #ff2d3a;
-  box-shadow: 0 0 14px rgba(255, 45, 58, 0.5);
+  background: linear-gradient(180deg, #c01c25, #ac1820);
 }
 #t-action:empty {
   display: none;
@@ -95,13 +94,12 @@ button {
   right: 0;
   bottom: 0;
   height: 3px;
-  background: #1a1a1d;
+  background: #141417;
 }
 .timer i {
   display: block;
   height: 100%;
   width: 100%;
-  background: #e10600;
-  box-shadow: 0 0 8px #e10600;
+  background: linear-gradient(90deg, #a3121a, #c8222b);
   transform-origin: left;
 }

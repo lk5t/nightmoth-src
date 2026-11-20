@@ -56,8 +56,7 @@ fn path() -> PathBuf {
 
 impl ChangeLog {
     pub fn load() -> ChangeLog {
-        std::fs::read_to_string(path())
-            .ok()
+        win::read_state_file("changes.json")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     }

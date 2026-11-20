@@ -50,6 +50,13 @@ pub struct InstalledApp {
     pub quiet: Option<String>,
 }
 
+impl InstalledApp {
+    /// Registered in HKCU (per-user install) rather than machine-wide.
+    pub fn per_user(&self) -> bool {
+        self.key.starts_with("HKCU")
+    }
+}
+
 fn parse_date(s: &str) -> Option<i64> {
     let d = chrono::NaiveDate::parse_from_str(s.trim(), "%Y%m%d").ok()?;
     Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
@@ -114,6 +121,21 @@ fn exes_in(dir: &Path) -> Vec<String> {
     out
 }
 
+/// File name of the program a command line starts (lowercase).
+fn program_name(cmd: &str) -> String {
+    let c = cmd.trim();
+    let path = if let Some(rest) = c.strip_prefix('"') {
+        rest.split('"').next().unwrap_or("")
+    } else {
+        let low = c.to_lowercase();
+        match low.find(".exe") {
+            Some(i) => &c[..i + 4],
+            None => c.split(' ').next().unwrap_or(""),
+        }
+    };
+    Path::new(path).file_name().map(|f| f.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
 fn quiet_command(uninstall: &str, quiet: Option<&str>) -> Option<String> {
     if let Some(q) = quiet {
         if !q.trim().is_empty() {
@@ -127,15 +149,100 @@ fn quiet_command(uninstall: &str, quiet: Option<&str>) -> Option<String> {
         let end = u[start..].find('}')? + start;
         return Some(format!("MsiExec.exe /X{} /qn /norestart", &u[start..=end]));
     }
-    if low.contains("unins") && low.contains(".exe") {
-        // Inno Setup
+    let prog = program_name(u);
+    if prog.starts_with("unins0") {
+        // Inno Setup (unins000.exe)
         return Some(format!("{} /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", u));
     }
-    if low.contains("uninstall.exe") || low.contains("uninst.exe") {
-        // NSIS
-        return Some(format!("{} /S", u));
+    if prog.starts_with("uninst") && prog.ends_with(".exe") {
+        // NSIS / electron-builder (uninstall.exe, uninst.exe, "Uninstall Foo.exe")
+        return Some(if low.contains(" /s") { u.to_string() } else { format!("{} /S", u) });
+    }
+    if prog == "update.exe" && low.contains("--uninstall") {
+        // Squirrel (Discord, Slack, GitHub Desktop…)
+        return Some(if low.contains(" -s") { u.to_string() } else { format!("{} -s", u) });
     }
     None
+}
+
+fn filetime_to_unix(ft: u64) -> Option<i64> {
+    if ft == 0 {
+        return None;
+    }
+    let t = (ft / 10_000_000) as i64 - 11_644_473_600;
+    (946_684_800..now() + 86_400).contains(&t).then_some(t)
+}
+
+fn rot13(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' => (((c as u8 - b'a' + 13) % 26) + b'a') as char,
+            'A'..='Z' => (((c as u8 - b'A' + 13) % 26) + b'A') as char,
+            _ => c,
+        })
+        .collect()
+}
+
+fn bump(map: &mut HashMap<String, i64>, k: String, t: i64) {
+    let e = map.entry(k).or_insert(0);
+    if t > *e {
+        *e = t;
+    }
+}
+
+/// Windows' own record of what you run (kept long before Nightmoth was installed):
+/// exe name -> last run, and Start-menu/desktop shortcut name -> last run.
+fn userassist() -> (HashMap<String, i64>, Vec<(String, i64)>) {
+    const BASE: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist";
+    let mut exes = HashMap::new();
+    let mut lnks: HashMap<String, i64> = HashMap::new();
+    for guid in win::reg_subkeys(Hive::HKCU, BASE) {
+        for (name, data) in win::reg_values_raw(Hive::HKCU, &format!(r"{BASE}\{guid}\Count")) {
+            if data.len() < 68 {
+                continue;
+            }
+            let ft = u64::from_le_bytes([data[60], data[61], data[62], data[63], data[64], data[65], data[66], data[67]]);
+            let Some(t) = filetime_to_unix(ft) else { continue };
+            let path = rot13(&name).to_lowercase();
+            let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+            if file.ends_with(".exe") {
+                bump(&mut exes, file, t);
+            } else if let Some(stem) = file.strip_suffix(".lnk") {
+                bump(&mut lnks, stem.to_string(), t);
+            }
+        }
+    }
+    (exes, lnks.into_iter().collect())
+}
+
+/// Background Activity Moderator: last run time of every exe, per user (admin-only key).
+fn bam() -> HashMap<String, i64> {
+    let mut map = HashMap::new();
+    for root in [r"SYSTEM\CurrentControlSet\Services\bam\State\UserSettings", r"SYSTEM\CurrentControlSet\Services\bam\UserSettings"] {
+        for sid in win::reg_subkeys(Hive::HKLM, root) {
+            for (name, data) in win::reg_values_raw(Hive::HKLM, &format!(r"{root}\{sid}")) {
+                if data.len() < 8 {
+                    continue;
+                }
+                let ft = u64::from_le_bytes([data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]]);
+                let Some(t) = filetime_to_unix(ft) else { continue };
+                let file = name.rsplit('\\').next().unwrap_or("").to_lowercase();
+                if file.ends_with(".exe") {
+                    bump(&mut map, file, t);
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Last time a shortcut named like the app was opened.
+fn shortcut_used(name: &str, lnks: &[(String, i64)]) -> Option<i64> {
+    let n = name.to_lowercase();
+    lnks.iter()
+        .filter(|(stem, _)| stem.len() >= 4 && (n == *stem || n.starts_with(stem.as_str()) || stem.starts_with(n.as_str())))
+        .map(|(_, t)| *t)
+        .max()
 }
 
 fn is_protected(name: &str, publisher: &str) -> bool {
@@ -145,8 +252,11 @@ fn is_protected(name: &str, publisher: &str) -> bool {
 
 pub fn list() -> Vec<InstalledApp> {
     let c = cfg();
+    // usage history from Windows itself, so apps unused since before Nightmoth was installed are found too
     let pf = prefetch_map();
-    let prefetch_works = !pf.is_empty();
+    let (ua_exes, ua_lnks) = userassist();
+    let bam = bam();
+    let usage_works = !pf.is_empty() || !ua_exes.is_empty() || !bam.is_empty();
     let t = now();
     let mut seen = std::collections::HashSet::new();
     let mut out = vec![];
@@ -195,7 +305,13 @@ pub fn list() -> Vec<InstalledApp> {
                 }
             }
             exes.retain(|e| !e.contains("unins") && !e.contains("setup") && !e.contains("crash") && !e.contains("update"));
-            let last_used = exes.iter().filter_map(|e| pf.get(e).copied()).max();
+            let lnk_used = shortcut_used(&name, &ua_lnks);
+            let last_used = exes
+                .iter()
+                .flat_map(|e| [pf.get(e).copied(), ua_exes.get(e).copied(), bam.get(e).copied()])
+                .flatten()
+                .chain(lnk_used)
+                .max();
 
             let reference = match (last_used, installed) {
                 (Some(l), Some(i)) => Some(l.max(i)),
@@ -208,12 +324,12 @@ pub fn list() -> Vec<InstalledApp> {
             let kept = c.is_kept(&name);
             let silent = quiet_command(&uninstall, quiet.as_deref()).is_some();
             let installed_long_ago = installed.map(|i| t - i > 30 * 86400).unwrap_or(false);
-            let candidate = prefetch_works
+            let candidate = usage_works
                 && !protected
                 && !kept
                 && silent
                 && installed_long_ago
-                && !exes.is_empty()
+                && (!exes.is_empty() || lnk_used.is_some())
                 && days_unused.map(|d| d >= c.unused_days as i64).unwrap_or(false);
 
             out.push(InstalledApp {
@@ -250,7 +366,12 @@ fn still_installed(name: &str) -> bool {
 /// Uninstall silently. Returns Err if no silent method or it failed.
 pub fn uninstall(app: &InstalledApp, module: &str) -> Result<(), String> {
     let cmd = quiet_command(&app.uninstall, app.quiet.as_deref()).ok_or("This app has no silent uninstaller — remove it from Windows Settings")?;
-    win::run_cmdline(&cmd)?;
+    if app.per_user() {
+        // Any program can write a per-user uninstall entry, so it never runs with admin rights.
+        crate::userjob::run("cmd", &cmd, Some(Duration::from_secs(15 * 60)))?;
+    } else {
+        win::run_cmdline(&cmd)?;
+    }
     // installers often finish in a child process; wait a little
     for _ in 0..40 {
         if !still_installed(&app.name) {
@@ -261,7 +382,9 @@ pub fn uninstall(app: &InstalledApp, module: &str) -> Result<(), String> {
     if still_installed(&app.name) {
         return Err(format!("{} is still installed", app.name));
     }
-    changelog::record(module, &format!("Removed {}", app.name), &format!("{} MB", app.size_mb), Change::AppRemoved { name: app.name.clone() });
+    let leftovers = remove_leftovers(app);
+    let detail = if leftovers { format!("{} MB · leftover folder deleted", app.size_mb) } else { format!("{} MB", app.size_mb) };
+    changelog::record(module, &format!("Removed {}", app.name), &detail, Change::AppRemoved { name: app.name.clone() });
     with_cfg(|cf| {
         cf.stats.apps_removed += 1;
         cf.stats.freed_bytes += app.size_mb * 1024 * 1024;
@@ -274,6 +397,61 @@ pub fn uninstall(app: &InstalledApp, module: &str) -> Result<(), String> {
         });
     });
     Ok(())
+}
+
+/// Is this install folder safe to delete after uninstalling? Only a dedicated app folder
+/// inside the usual install locations, never a shared or system folder, and never one
+/// another installed app still lives in.
+fn leftover_dir(app: &InstalledApp) -> Option<std::path::PathBuf> {
+    let loc = app.location.trim().trim_end_matches('\\');
+    if loc.is_empty() {
+        return None;
+    }
+    let p = Path::new(loc);
+    let meta = std::fs::symlink_metadata(p).ok()?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return None;
+    }
+    let low = loc.to_lowercase();
+    let mut roots: Vec<String> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].iter().map(|v| win::env(v)).collect();
+    if app.per_user() {
+        let local = win::env("LOCALAPPDATA");
+        roots = vec![format!(r"{local}\Programs"), local, win::env("APPDATA")];
+    }
+    let inside = roots.iter().filter(|r| !r.is_empty()).any(|r| {
+        let r = r.to_lowercase();
+        low.starts_with(&format!("{r}\\")) && !low[r.len() + 1..].is_empty()
+    });
+    if !inside {
+        return None;
+    }
+    let last = p.file_name()?.to_string_lossy().to_lowercase();
+    const SHARED: &[&str] = &["common files", "windowsapps", "microsoft", "windows", "programs", "temp", "packages", "microsoft shared", "internet explorer", "windows defender"];
+    if SHARED.contains(&last.as_str()) {
+        return None;
+    }
+    // another app still installed in (or above) this folder?
+    let others = list();
+    if others.iter().any(|o| {
+        let ol = o.location.trim().trim_end_matches('\\').to_lowercase();
+        !ol.is_empty() && o.name != app.name && (ol == low || ol.starts_with(&format!("{low}\\")) || low.starts_with(&format!("{ol}\\")))
+    }) {
+        return None;
+    }
+    Some(p.to_path_buf())
+}
+
+/// Delete what the uninstaller left behind. Per-user folders are deleted with the user's rights.
+fn remove_leftovers(app: &InstalledApp) -> bool {
+    let Some(dir) = leftover_dir(app) else { return false };
+    if app.per_user() {
+        let line = format!("rmdir /s /q \"{}\"", dir.to_string_lossy());
+        let _ = crate::userjob::run("cmd", &line, Some(Duration::from_secs(120)));
+    } else {
+        // remove_dir_all never follows junctions or symlinks
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    !dir.exists()
 }
 
 pub fn uninstall_by_key(key: &str) -> Result<String, String> {
@@ -324,7 +502,8 @@ pub fn unused_tick() {
     }
     with_cfg(|cf| cf.last_unused_check = now());
 
-    let candidates: Vec<InstalledApp> = list().into_iter().filter(|a| a.candidate).take(5).collect();
+    let app_up = crate::userjob::app_connected();
+    let candidates: Vec<InstalledApp> = list().into_iter().filter(|a| a.candidate && (app_up || !a.per_user())).take(8).collect();
     if candidates.is_empty() {
         return;
     }

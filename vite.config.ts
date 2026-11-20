@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         toast: resolve(__dirname, "toast.html"),
+        widgets: resolve(__dirname, "widgets.html"),
       },
     },
   },

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Nightmoth windows",
-  "windows": ["main", "toast"],
+  "windows": ["main", "toast", "widgets"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",

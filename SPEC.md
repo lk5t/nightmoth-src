@@ -25,21 +25,22 @@
 ### Palette
 | Token | Hex | Use |
 |---|---|---|
-| `bg` | `#0A0A0B` | Window background |
-| `panel` | `#121214` | Cards, sidebar |
-| `panel-2` | `#1A1A1D` | Hover, inputs |
-| `border` | `#26262A` | Hairlines |
+| `bg` | `#060607` | Window background |
+| `panel` | `#0D0D0F` | Cards, sidebar |
+| `panel-2` | `#131316` | Hover, inputs |
+| `border` | `#1C1C20` | Hairlines |
 | `text` | `#F2F2F3` | Primary text |
 | `text-dim` | `#8A8A92` | Secondary text |
-| `red` | `#E10600` | Primary accent, active tab, toggles on |
-| `red-glow` | `#FF2D3A` | Hover, glows, progress bars |
-| `red-deep` | `#5A0A0C` | Accent backgrounds, selected rows |
+| `red` | `#A3121A` | Primary accent, toggles on, primary buttons (deep crimson, not signal red) |
+| `red-glow` | `#C8222B` | Hover, active tab bar, progress bars |
+| `red-text` | `#E0474F` | Red text on black |
+| `red-deep` | `#330A0D` | Accent backgrounds, selected rows |
 | `ok` | `#3DDC84` | Success numbers only |
 | `warn` | `#FFB020` | Warnings only |
 
 ### Style
 - Frameless window, custom title bar, Windows 11 Mica disabled (solid black so the red pops)
-- Rounded 10px cards, 1px borders, subtle red glow on focus/active
+- Rounded 12px cards, 1px borders, almost no glow — red is used sparingly
 - Font: Inter (UI), JetBrains Mono (numbers/stats)
 - Smooth 150–250ms transitions; no bouncy animations
 - Moth logo: minimal geometric moth outline in red
@@ -103,12 +104,14 @@ Sidebar with tabs. Active tab = red bar on the left + red icon.
 - Saved looks: each wallpaper remembers its theme
 
 **Desktop & taskbar**
-- Taskbar auto-hide (`SHAppBarMessage` `ABM_SETSTATE`)
+- Taskbar background: **Invisible** (default) / **Tinted glass** / Windows default — `SetWindowCompositionAttribute` re-applied by the app; the taskbar is never hidden (auto-hide is switched off once on upgrade)
+- **Desktop widgets** (Rainmeter / Seelen UI / BeWidgets idea): clock, calendar, system monitor, Nightmoth week. One see-through, click-through window behind all windows. Accent from the wallpaper, placed automatically in its calmest area (or a chosen spot). Hidden while gaming.
+- **Tidy desktop** (Fences idea): sort loose desktop files into Images / Videos / Music / Documents / Archives / Installers / Code / Other; shortcuts and folders stay. Undo last tidy. Autopilot does it daily for files untouched for a day.
 - Taskbar alignment (`TaskbarAl`), hide Search / Widgets / Task View / Chat buttons
 - Hide desktop icons (toggle desktop view `HideIcons` + refresh)
 - Window corner style (rounded / square) where supported
 
-**Presets:** Void · Neon Night · Clean · Custom (save your own)
+**Presets:** Void (invisible taskbar) · Neon Night (tinted glass) · Clean (invisible) · Windows default
 
 ### 3.3 Speed (manual tools, also used by Autopilot)
 | Module | What it does |
@@ -126,14 +129,16 @@ Master toggle: **Autopilot ON/OFF**. Each module has its own toggle and schedule
 
 **Unused app cleaner — fully automatic**
 - Collect installed apps: Uninstall registry keys (HKLM, HKLM WOW6432, HKCU) + Appx packages
-- Usage data per app: Prefetch last-run times, UserAssist (ROT13-decoded), Amcache, exe last-access as fallback. Map exes to apps via `InstallLocation`.
+- Usage data per app — all recorded by Windows itself, so it covers the time before Nightmoth was installed: Prefetch last-run times, UserAssist (ROT13-decoded, exes and Start-menu shortcuts), BAM (`bam\State\UserSettings`). Map exes to apps via `InstallLocation` and `DisplayIcon`.
 - Rule: unused for **N days** (default 90; options 60 / 90 / 180)
 - **Safeguards (cannot be turned off):**
   - Protected list: system components, drivers, runtimes (VC++, .NET, DirectX), security software, Nightmoth, game launchers, anything user marks **Keep**
   - Skip anything installed in the last 30 days
   - **5-second cancel window**: toast "Removing X in 5s — unused 94 days" with **Cancel** (cancel = auto-added to Keep)
   - Removal log with **Reinstall** button (winget ID matched where available)
-- Uninstall method: `QuietUninstallString` → `msiexec /x {GUID} /qn` → `Remove-AppxPackage`. If no silent method exists, skip and list it as "needs manual removal".
+- Uninstall method: `QuietUninstallString` → `msiexec /x {GUID} /qn` → Inno `/VERYSILENT` → NSIS `/S` → Squirrel `--uninstall -s`. If no silent method exists, skip and list it as "needs manual removal".
+- Per-user (HKCU) uninstallers run with the user's rights through the app, never elevated.
+- Leftover install folder deleted after a successful uninstall, only if it is a dedicated folder under Program Files / LocalAppData\Programs / AppData and no other installed app lives there.
 
 **Game booster**
 - Detect game launch: process-start events (WMI `Win32_ProcessStartTrace`) matched against:
@@ -141,7 +146,7 @@ Master toggle: **Autopilot ON/OFF**. Each module has its own toggle and schedule
   - Steam/Epic library folders
   - Fallback: exclusive/borderless fullscreen on primary monitor for > 10 s
 - On launch: Ultimate Performance plan, game process `HIGH_PRIORITY_CLASS`, suspend/close user-defined background apps, Focus Assist / Do Not Disturb on, pause slideshow + heavy Nightmoth work
-- On exit: restore everything exactly
+- On exit: restore everything exactly (closed apps are reopened as the normal user)
 - **Per-game best settings (later phase):** for supported games, edit the game's own settings file based on detected hardware (GPU tier, RAM, refresh rate). Back up the original file first. Start with Roblox, then add games one at a time.
 
 **Always-on upkeep**
@@ -163,7 +168,7 @@ Master toggle: **Autopilot ON/OFF**. Each module has its own toggle and schedule
 
 ### 3.7 Settings
 - Start with Windows (on by default)
-- Toast settings: on/off per type, duration (default 5 s), quiet mode
+- Pop-ups are always on (no per-type or quiet switches); only the duration can change
 - Unused-app threshold, cleanup schedule, hog thresholds
 - Update check (GitHub Releases of `lk5t/Nightmoth`)
 - About / license
@@ -171,7 +176,7 @@ Master toggle: **Autopilot ON/OFF**. Each module has its own toggle and schedule
 ---
 
 ## 4. Toasts (Razer Cortex style)
-- Bottom-right of primary monitor, above taskbar area, 360×88 px
+- Bottom-right of primary monitor, above the taskbar: 392×112 logical px window (card inset 10 px), sized from the primary monitor's scale factor so it is never cut off
 - Black card `#0A0A0B`, red left edge + red countdown bar, moth icon, title + one line
 - Slides in 200 ms, stays **5 s**, fades out; hover pauses; click opens details
 - Optional action button (e.g. **Cancel**, **Undo**)
@@ -208,17 +213,19 @@ nightmoth-src/
 
 **Key crates:** `windows` (Win32/WinRT), `winreg`, `wmi`, `image` + `kmeans_colors`, `sysinfo`, `tokio`, `serde`, `rusqlite` (change log + usage DB), `tauri-plugin-autostart`, `tauri-plugin-single-instance`, `tauri-plugin-updater`.
 
-**Elevation:** many modules need admin (services, HKLM, Prefetch, uninstall, WMI process trace).
-- Tray app runs **elevated at logon** through a Task Scheduler task ("Run with highest privileges") so there's no UAC prompt every boot.
-- First run asks for admin once to create that task.
+**Elevation:** many modules need admin (services, HKLM, Prefetch, BAM, uninstall).
+- WebView2 can't run elevated, so there are two processes: the **app** (window, tray, pop-ups, widgets, taskbar, tidy — normal user, autostart via HKCU Run) and the **engine** (`--engine`, all system changes + Autopilot) started elevated by the "Nightmoth Engine" scheduled task. First run asks for admin once to create that task.
+- App ↔ engine: localhost TCP, random port + token in `%ProgramData%\Nightmoth\engine.json`. The engine checks the owning process of every connection (`GetExtendedTcpTable` → exe path) and only answers its own exe.
+- The engine's files live in `%ProgramData%\Nightmoth` with an ACL of Administrators/SYSTEM full, Users read (set at every start). Nothing a normal program can write steers the engine.
+- Anything a normal program could have planted (HKCU uninstall strings, relaunching apps after a boost) runs as the user via the app ("user jobs").
 
-**Storage:** `%APPDATA%\Nightmoth\` — `config.json`, `nightmoth.db` (change log, usage, removal log), `looks/` (saved themes), `backups/` (original registry values + game config files).
+**Storage:** engine: `%ProgramData%\Nightmoth\` — `config.json`, `changes.json`, `engine.json`, engine log, generated wallpapers, lock-screen image (migrated once from AppData in 0.3). App: `%APPDATA%\Nightmoth\` — app log, `tidy.json`.
 
 ---
 
 ## 6. Distribution
 - Build in `nightmoth-src` → NSIS installer `Nightmoth-Setup-x.y.z.exe`
-- Upload to **GitHub Releases on `lk5t/Nightmoth`** (public repo has no source)
+- Uploaded to **this repo's GitHub Releases** ("Nightmoth (latest build)" on every push to `main`, versioned on `v*` tags)
 - Public repo contains: README (features, screenshots, install steps, SmartScreen note), LICENSE, CHANGELOG
 - **License:** proprietary freeware — free to use, no redistribution, no modification, no rebranding, no reverse engineering
 - Unsigned at first: users see SmartScreen "More info → Run anyway" (documented in README). Code signing later.

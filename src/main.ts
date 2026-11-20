@@ -45,7 +45,7 @@ function snack(msg: string, err = false) {
 }
 
 /** Commands handled by the app itself; everything else runs in the elevated engine. */
-const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action"]);
+const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo"]);
 
 function raw<T = Any>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return LOCAL.has(cmd) ? invoke<T>(cmd, args) : invoke<T>("engine", { cmd, args: args ?? {} });
@@ -287,7 +287,7 @@ PAGES.look = {
     const c = st.config;
     const a = st.analysis;
     const d = st.desktop;
-    const accent = st.accent || a?.accent || "#E10600";
+    const accent = st.accent || a?.accent || "#A3121A";
     const chosen = c.looks?.[st.wallpaper]?.accent_index ?? a?.accent_index;
 
     el.innerHTML = `
@@ -318,15 +318,39 @@ PAGES.look = {
 
       <div class="section-title"><h2>Presets</h2></div>
       <div class="presets">
-        <div class="preset" data-preset="void"><b>Void</b><span>Pure black-red wallpaper, hidden taskbar, empty desktop</span></div>
-        <div class="preset" data-preset="neon"><b>Neon Night</b><span>Synthwave wallpaper, hidden taskbar & icons</span></div>
-        <div class="preset" data-preset="clean"><b>Clean</b><span>Keep your wallpaper, strip the clutter</span></div>
-        <div class="preset" data-preset="default"><b>Windows default</b><span>Put the taskbar and icons back</span></div>
+        <div class="preset" data-preset="void"><b>Void</b><span>Black-red wallpaper, invisible taskbar, empty desktop</span></div>
+        <div class="preset" data-preset="neon"><b>Neon Night</b><span>Synthwave wallpaper, tinted glass taskbar, no icons</span></div>
+        <div class="preset" data-preset="clean"><b>Clean</b><span>Keep your wallpaper, invisible taskbar, no clutter</span></div>
+        <div class="preset" data-preset="default"><b>Windows default</b><span>Normal taskbar and icons back</span></div>
       </div>
+
+      <div class="section-title"><h2>Taskbar</h2><span class="muted">Stays put — only the bar itself changes</span></div>
+      <div class="card"><div class="choice" id="tbstyle">
+        ${[["clear", "Invisible", "No bar at all — just your app icons floating on the wallpaper"],
+           ["tint", "Tinted glass", "A faint wash of your wallpaper's accent behind the icons"],
+           ["normal", "Windows default", "The normal solid taskbar"]].map(([id, n, desc]) => `
+          <div data-tb="${id}" class="${d.taskbar === id ? "on" : ""}"><div class="tbprev ${id}"><i></i><i></i><i></i><i></i></div><b>${n}</b><span>${desc}</span></div>`).join("")}
+      </div></div>
+
+      <div class="section-title"><h2>Desktop widgets</h2><span class="muted">Coloured and placed from your wallpaper</span></div>
+      <div class="card"><div class="list">
+        <div class="item"><div class="info"><div class="name">Show widgets on the desktop</div><div class="desc">They sit behind your windows, never take clicks and hide while you game</div></div>${toggle('data-cfg="widgets_on"', c.widgets_on)}</div>
+        <div class="item"><div class="info"><div class="name">Widgets</div><div class="desc">Click to add or remove</div></div>
+          <div class="chips" id="wkinds">${[["clock", "Clock"], ["calendar", "Calendar"], ["system", "System monitor"], ["week", "Nightmoth week"]].map(([id, n]) => `<button class="chip ${(c.widgets || []).includes(id) ? "on" : ""}" data-wk="${id}">${n}</button>`).join("")}</div></div>
+        <div class="item"><div class="info"><div class="name">Where</div><div class="desc" id="spotdesc">${c.widget_spot === "auto" || !c.widget_spot ? `Automatic — the calmest part of your wallpaper${a ? ` (${esc(a.empty_area)})` : ""}` : esc(c.widget_spot)}</div></div>
+          <button class="btn small ${c.widget_spot === "auto" ? "primary" : ""}" id="spotauto">Auto</button>
+          <div class="spots" id="spots">${["top left", "top", "top right", "left", "center", "right", "bottom left", "bottom", "bottom right"].map((n, i) => `<button title="${n}" data-spot="${n}" class="${c.widget_spot === n ? "on" : c.widget_spot === "auto" && a && i === a.calm_cell ? "auto" : ""}"></button>`).join("")}</div></div>
+        <div class="item"><div class="info"><div class="name">Style</div></div>
+          <select data-cfg="widget_style">${[["glass", "Smoked glass"], ["solid", "Solid black"], ["minimal", "Minimal (text only)"]].map(([v, n]) => `<option value="${v}" ${c.widget_style === v ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+        <div class="item"><div class="info"><div class="name">Size</div></div><input type="range" min="0.8" max="1.4" step="0.05" id="wscale" value="${c.widget_scale ?? 1}"></div>
+        <div class="item"><div class="info"><div class="name">Match wallpaper colour</div><div class="desc">Off = Nightmoth red</div></div>${toggle('data-cfg="widget_accent"', c.widget_accent)}</div>
+      </div></div>
+
+      <div class="section-title"><h2>Tidy desktop</h2><span class="muted">Loose files sorted into folders · shortcuts stay</span></div>
+      <div class="card" id="tidy">${loading("Looking at your desktop")}</div>
 
       <div class="section-title"><h2>Desktop & taskbar</h2></div>
       <div class="card"><div class="list">
-        <div class="item"><div class="info"><div class="name">Hide taskbar automatically</div><div class="desc">Slides up when your mouse touches the bottom</div></div>${toggle('data-desk="autohide"', d.autohide)}</div>
         <div class="item"><div class="info"><div class="name">Show desktop icons</div><div class="desc">Turn off for a perfectly clean wallpaper</div></div>${toggle('data-desk="icons"', d.icons)}</div>
         <div class="item"><div class="info"><div class="name">Centre taskbar icons</div><div class="desc">Off = left-aligned like Windows 10</div></div>${toggle('data-desk="center"', d.center)}</div>
         <div class="item"><div class="info"><div class="name">Task View button</div></div>${toggle('data-desk="taskview"', d.taskview)}</div>
@@ -386,6 +410,51 @@ PAGES.look = {
     });
     const search = q<HTMLSelectElement>("#search");
     search.onchange = () => call("desktop_set", { key: "search", value: Number(search.value) });
+
+    qa<HTMLElement>("[data-tb]").forEach((t) => {
+      t.onclick = async () => {
+        await call("desktop_set", { key: "taskbar", value: t.dataset.tb });
+        qa("[data-tb]").forEach((x) => x.classList.toggle("on", x === t));
+        snack(t.dataset.tb === "clear" ? "Taskbar is now invisible" : t.dataset.tb === "tint" ? "Tinted glass taskbar" : "Normal taskbar");
+      };
+    });
+
+    let kinds: string[] = [...(c.widgets || [])];
+    qa<HTMLButtonElement>("[data-wk]").forEach((b) => {
+      b.onclick = async () => {
+        const k = b.dataset.wk!;
+        kinds = kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k];
+        b.classList.toggle("on", kinds.includes(k));
+        await setCfg({ widgets: kinds });
+      };
+    });
+    const setSpot = async (spot: string) => {
+      await setCfg({ widget_spot: spot });
+      go("look");
+    };
+    q("#spotauto").onclick = () => setSpot("auto");
+    qa<HTMLButtonElement>("[data-spot]").forEach((b) => (b.onclick = () => setSpot(b.dataset.spot!)));
+    const wscale = q<HTMLInputElement>("#wscale");
+    wscale.onchange = () => setCfg({ widget_scale: Number(wscale.value) });
+
+    const drawTidy = async () => {
+      const box = q("#tidy");
+      if (!box) return;
+      const t = await raw<Any>("tidy_preview").catch(() => null);
+      if (!t) { box.innerHTML = `<div class="empty">Couldn't read the desktop.</div>`; return; }
+      const total = t.groups.reduce((n: number, g: [string, number]) => n + g[1], 0);
+      box.innerHTML = `<div class="row between"><div><h3>${total ? `${total} loose files on your desktop` : "Your desktop is tidy"}</h3>
+          <p class="sub" style="margin:0">${total ? t.groups.map((g: [string, number]) => `${g[1]} → ${esc(g[0])}`).join(" · ") : "Nothing to sort."}${t.last ? ` · last tidy ${ago(t.last)}` : ""}</p></div>
+          <div class="row">${t.can_undo ? `<button class="btn" id="tundo">Undo last tidy</button>` : ""}<button class="btn primary" id="trun" ${total ? "" : "disabled"}>Tidy now</button></div></div>
+        <div class="item" style="margin-top:10px;border-top:1px solid var(--border);padding-top:12px"><div class="info"><div class="name">Tidy automatically every day</div><div class="desc">Only files you haven't touched for a day. Part of Autopilot.</div></div>${toggle('id="tauto"', c.tidy_auto)}</div>`;
+      const run = q<HTMLButtonElement>("#trun");
+      run.onclick = () => busy(run, async () => { const n = await call<number>("tidy_run"); snack(`${n} files sorted`); await drawTidy(); });
+      const undo = document.getElementById("tundo") as HTMLButtonElement | null;
+      if (undo) undo.onclick = () => busy(undo, async () => { const n = await call<number>("tidy_undo"); snack(`${n} files put back`); await drawTidy(); });
+      const ta = q<HTMLInputElement>("#tauto");
+      ta.onchange = async () => { c.tidy_auto = ta.checked; await setCfg({ tidy_auto: ta.checked }); snack("Saved"); };
+    };
+    drawTidy();
 
     let folder = c.slideshow_folder as string;
     const son = q<HTMLInputElement>("#son");
@@ -583,7 +652,7 @@ PAGES.autopilot = {
 
       <div class="grid g2" style="margin-top:14px">
         <div class="card"><div class="row between"><h3>Unused app cleaner</h3>${toggle('data-cfg="unused_cleaner"', c.unused_cleaner)}</div>
-          <p class="sub">Fully automatic. Removes apps you haven't opened in a long time. You get 5 seconds to cancel each one, and cancelled apps are never touched again. System apps, drivers, games and security software are protected.</p>
+          <p class="sub">Fully automatic. Uses Windows' own history of what you run (Prefetch, UserAssist, BAM), so it also knows about apps you stopped using long before Nightmoth was installed. Removes them silently, deletes the folder they leave behind, and gives you 5 seconds to cancel each one. Cancelled apps are never touched again. System apps, drivers, games and security software are protected.</p>
           <div class="row"><span class="muted">Remove after</span><select data-cfg="unused_days" data-num>${[30, 60, 90, 180, 365].map((v) => `<option value="${v}" ${v === c.unused_days ? "selected" : ""}>${v} days unused</option>`).join("")}</select></div></div>
         <div class="card"><div class="row between"><h3>Scheduled cleanup</h3>${toggle('data-cfg="auto_cleanup"', c.auto_cleanup)}</div>
           <p class="sub">Clears temp files, update leftovers and caches. Last run: ${ago(c.last_cleanup)}.</p>
@@ -741,11 +810,6 @@ PAGES.safety = {
 
 /* ================================================================ settings */
 
-const TOAST_TYPES: [string, string][] = [
-  ["theme", "Theme changes"], ["optimize", "Optimizations"], ["cleanup", "Cleanups"], ["startup", "Startup blocked"],
-  ["game", "Game boosts"], ["hog", "Background hogs"], ["report", "Weekly report"],
-];
-
 PAGES.settings = {
   title: "Settings",
   sub: "",
@@ -759,15 +823,10 @@ PAGES.settings = {
           <div class="item"><div class="info"><div class="name">Start with Windows</div><div class="desc">Opens quietly in the tray when you log in</div></div>${toggle('id="auto"', autostart)}</div>
           <div class="item"><div class="info"><div class="name">Autopilot</div><div class="desc">Automatic optimizations from the tray</div></div>${toggle('data-cfg="autopilot"', c.autopilot)}</div>
         </div></div>
-        <div class="card"><h3>Pop-ups</h3><div class="list">
-          <div class="item"><div class="info"><div class="name">Show pop-ups</div><div class="desc">Bottom-right, like Razer Cortex</div></div>${toggle('data-cfg="toast_enabled"', c.toast_enabled)}</div>
-          <div class="item"><div class="info"><div class="name">Quiet mode</div><div class="desc">Hide everything except removal warnings</div></div>${toggle('data-cfg="toast_quiet"', c.toast_quiet)}</div>
-          <div class="item"><div class="info"><div class="name">Show for</div></div><input type="range" min="3000" max="10000" step="1000" id="ms" value="${c.toast_ms}"><span class="mono" id="msv">${c.toast_ms / 1000}s</span></div>
+        <div class="card"><h3>Pop-ups</h3><p class="sub">Bottom-right, every time Nightmoth does something. Always on — Autopilot never acts silently.</p><div class="list">
+          <div class="item"><div class="info"><div class="name">Show each pop-up for</div></div><input type="range" min="3000" max="10000" step="1000" id="ms" value="${c.toast_ms}"><span class="mono" id="msv">${c.toast_ms / 1000}s</span></div>
         </div><button class="btn" id="test" style="margin-top:10px">Show a test pop-up</button></div>
       </div>
-      <div class="section-title"><h2>Pop-up types</h2></div>
-      <div class="card"><div class="list">${TOAST_TYPES.map(([id, n]) => `<div class="item"><div class="info"><div class="name">${n}</div></div>${toggle(`data-tt="${id}"`, !(c.toast_off || []).includes(id))}</div>`).join("")}
-        <div class="item"><div class="info"><div class="name">App removal warnings</div><div class="desc">Always shown so you can cancel</div></div><span class="badge red">Always on</span></div></div></div>
       <div class="section-title"><h2>About</h2></div>
       <div class="card"><div class="row between"><div class="row"><img src="/moth-logo.png" style="width:54px"><div><h3>Nightmoth ${esc(ov.version)}</h3><p class="sub" style="margin:0">Desktop glow-up + autopilot optimizer · by lk5t</p></div></div>
         <button class="btn danger" id="quit">Quit Nightmoth</button></div></div>`;
@@ -779,12 +838,6 @@ PAGES.settings = {
     ms.onchange = () => setCfg({ toast_ms: Number(ms.value) });
     q("#test").onclick = () => call("toast_test");
     q("#quit").onclick = () => call("quit_app");
-    qa<HTMLInputElement>("[data-tt]").forEach((t) => (t.onchange = async () => {
-      const off = new Set<string>(c.toast_off || []);
-      t.checked ? off.delete(t.dataset.tt!) : off.add(t.dataset.tt!);
-      c.toast_off = [...off];
-      await setCfg({ toast_off: c.toast_off });
-    }));
   },
 };
 
