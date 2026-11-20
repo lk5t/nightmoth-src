@@ -1,6 +1,6 @@
 [package]
 name = "nightmoth"
-version = "0.1.0"
+version = "0.2.0"
 description = "Nightmoth — desktop glow-up + autopilot optimizer"
 authors = ["lk5t"]
 edition = "2021"

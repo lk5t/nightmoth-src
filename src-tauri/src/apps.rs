@@ -351,7 +351,12 @@ pub fn unused_tick() {
         );
         *lock(&id_cell) = tid.clone();
         // the countdown starts when the toast appears (it may wait behind others)
-        toast::wait_shown(&tid, Duration::from_secs(120));
+        // never remove anything the user didn't get the chance to see and cancel
+        if !toast::wait_shown(&tid, Duration::from_secs(120)) {
+            crate::log::log(&format!("skipped removing {}: the warning pop-up wasn't shown", app.name));
+            with_cfg(|cf| cf.last_unused_check = 0);
+            return;
+        }
         std::thread::sleep(Duration::from_millis(c.toast_ms.clamp(2000, 15000) + 800));
         if lock(&core().cancelled).remove(&tid) {
             continue;

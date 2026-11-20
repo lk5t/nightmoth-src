@@ -49,18 +49,23 @@ jobs:
           $exe = Get-ChildItem "$env:ProgramFiles\Nightmoth" -Filter *.exe -Recurse | Where-Object { $_.Name -notlike "uninstall*" } | Select-Object -First 1
           Write-Host "Installed exe: $($exe.FullName)"
           $p = Start-Process $exe.FullName -PassThru
-          Start-Sleep -Seconds 30
+          Start-Sleep -Seconds 45
           $alive = -not $p.HasExited
-          Write-Host "Process alive after 30s: $alive (exit code: $(if ($p.HasExited) { $p.ExitCode } else { '-' }))"
-          Write-Host "WebView2 processes: $((Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Measure-Object).Count)"
+          Write-Host "App alive after 45s: $alive"
+          Write-Host "Nightmoth processes:"
+          Get-CimInstance Win32_Process -Filter "Name='nightmoth.exe'" | ForEach-Object { Write-Host "  $($_.ProcessId) $($_.CommandLine)" }
+          Write-Host "Scheduled task:"
+          schtasks /Query /TN "Nightmoth Engine" 2>&1 | Write-Host
           Write-Host "----- nightmoth.log -----"
           Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -ErrorAction SilentlyContinue
           Write-Host "----- crash.log -----"
           Get-Content "$env:APPDATA\Nightmoth\crash.log" -ErrorAction SilentlyContinue
-          if ($alive) { Stop-Process -Id $p.Id -Force }
           $log = Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -Raw -ErrorAction SilentlyContinue
+          Get-Process nightmoth -ErrorAction SilentlyContinue | Stop-Process -Force
           if (-not $alive) { Write-Error "Nightmoth exited during startup"; exit 1 }
           if ($log -notmatch "main window ready") { Write-Error "Main window UI never loaded"; exit 1 }
+          if ($log -notmatch "engine ready") { Write-Error "Engine never started"; exit 1 }
+          if ($log -notmatch "app: engine connected") { Write-Error "App never connected to the engine"; exit 1 }
           Write-Host "SMOKE TEST PASSED"
 
       # Every push to main refreshes the "latest" release in this repo.

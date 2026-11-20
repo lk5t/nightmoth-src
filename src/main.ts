@@ -44,9 +44,16 @@ function snack(msg: string, err = false) {
   snackTimer = window.setTimeout(() => (el.className = ""), err ? 6000 : 3200);
 }
 
+/** Commands handled by the app itself; everything else runs in the elevated engine. */
+const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action"]);
+
+function raw<T = Any>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  return LOCAL.has(cmd) ? invoke<T>(cmd, args) : invoke<T>("engine", { cmd, args: args ?? {} });
+}
+
 async function call<T = Any>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   try {
-    return await invoke<T>(cmd, args);
+    return await raw<T>(cmd, args);
   } catch (e) {
     snack(String(e), true);
     throw e;
@@ -115,6 +122,7 @@ const ICONS: Record<string, string> = {
 
 type Page = { title: string; sub: string; render: (el: HTMLElement) => Promise<void> };
 let timers: number[] = [];
+let engineUp = false;
 let current = "home";
 
 document.getElementById("app")!.innerHTML = `
@@ -153,14 +161,15 @@ function go(name: string) {
   content.style.animation = "none";
   void content.offsetWidth;
   content.style.animation = "";
-  content.innerHTML = loading();
+  content.innerHTML = loading(engineUp ? "Loading" : "Starting the Nightmoth engine");
   content.scrollTop = 0;
   p.render(content).catch((e) => (content.innerHTML = `<div class="empty">Something went wrong: ${esc(e)}</div>`));
 }
 
 async function refreshStatus() {
   try {
-    const c = await invoke<Any>("get_config");
+    const c = await raw<Any>("get_config");
+    engineUp = true;
     const b = c.pending_boost;
     q("#status").innerHTML = b
       ? `<span class="dot on"></span>Boosting <b>${esc(b.game)}</b>`
@@ -168,7 +177,7 @@ async function refreshStatus() {
       ? `<span class="dot on"></span>Autopilot is on`
       : `<span class="dot"></span>Autopilot paused`;
   } catch {
-    /* ignore */
+    q("#status").innerHTML = `<span class="dot"></span>Engine starting…`;
   }
 }
 setInterval(refreshStatus, 5000);
@@ -236,7 +245,7 @@ PAGES.home = {
 
     const live = async () => {
       if (current !== "home") return;
-      const l = await invoke<Any>("live_stats").catch(() => null);
+      const l = await raw<Any>("live_stats").catch(() => null);
       if (!l || !q("#cpu")) return;
       const ramPct = (l.ram_used / l.ram_total) * 100;
       const diskPct = l.disk_total ? (l.disk_used / l.disk_total) * 100 : 0;
@@ -254,7 +263,7 @@ PAGES.home = {
     timers.push(window.setInterval(live, 2000));
 
     async function loadHealth(refresh: boolean) {
-      const h = await invoke<Any>("health", { refresh }).catch(() => null);
+      const h = await raw<Any>("health", { refresh }).catch(() => null);
       if (!h || !q("#arc")) return;
       q("#score").textContent = h.score;
       q("#arc").setAttribute("stroke-dashoffset", String(502.65 * (1 - h.score / 100)));
@@ -401,7 +410,7 @@ PAGES.look = {
     son.onchange = saveShow;
     smin.onchange = saveShow;
 
-    invoke<Any[]>("gallery_list")
+    raw<Any[]>("gallery_list")
       .then((items) => {
         const g = q("#gallery");
         if (!g) return;
@@ -743,10 +752,11 @@ PAGES.settings = {
   async render(el) {
     const c = await call<Any>("get_config");
     const ov = await call<Any>("overview");
+    const autostart = await call<boolean>("autostart_get");
     el.innerHTML = `
       <div class="grid g2">
         <div class="card"><h3>General</h3><div class="list">
-          <div class="item"><div class="info"><div class="name">Start with Windows</div><div class="desc">Runs in the tray with admin rights, no UAC prompt</div></div>${toggle('id="auto"', c.autostart)}</div>
+          <div class="item"><div class="info"><div class="name">Start with Windows</div><div class="desc">Opens quietly in the tray when you log in</div></div>${toggle('id="auto"', autostart)}</div>
           <div class="item"><div class="info"><div class="name">Autopilot</div><div class="desc">Automatic optimizations from the tray</div></div>${toggle('data-cfg="autopilot"', c.autopilot)}</div>
         </div></div>
         <div class="card"><h3>Pop-ups</h3><div class="list">

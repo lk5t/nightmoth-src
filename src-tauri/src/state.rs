@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use tauri::AppHandle;
 
 use crate::changelog::ChangeLog;
 use crate::config::Config;
@@ -21,10 +20,8 @@ pub struct Core {
 }
 
 static CORE: OnceLock<Core> = OnceLock::new();
-static APP: OnceLock<AppHandle> = OnceLock::new();
-
-pub fn init(app: AppHandle) {
-    let _ = APP.set(app);
+/// Only the engine (elevated background process) owns the core state.
+pub fn init() {
     let _ = CORE.set(Core {
         cfg: Mutex::new(Config::load()),
         log: Mutex::new(ChangeLog::load()),
@@ -38,10 +35,6 @@ pub fn init(app: AppHandle) {
 
 pub fn core() -> &'static Core {
     CORE.get().expect("core not initialised")
-}
-
-pub fn app() -> Option<&'static AppHandle> {
-    APP.get()
 }
 
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

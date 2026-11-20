@@ -5,8 +5,16 @@ use std::io::Write;
 use crate::win::{data_dir, wide};
 use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
+static ROLE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// "app", "engine" or "setup" — shown on every log line.
+pub fn set_role(r: &'static str) {
+    let _ = ROLE.set(r);
+}
+
 pub fn log(msg: &str) {
-    let line = format!("{} {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
+    let role = ROLE.get().copied().unwrap_or("?");
+    let line = format!("{} [{}] {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), role, msg);
     let p = data_dir().join("nightmoth.log");
     // keep the file small
     if std::fs::metadata(&p).map(|m| m.len() > 512 * 1024).unwrap_or(false) {
@@ -34,8 +42,8 @@ pub fn install_panic_hook() {
         let msg = format!("PANIC: {info}");
         log(&msg);
         let _ = std::fs::write(data_dir().join("crash.log"), &msg);
-        // only show a box for panics on the main thread (background ones are logged)
-        if std::thread::current().name() == Some("main") {
+        // only show a box for the app's main thread (background/engine panics are logged)
+        if std::thread::current().name() == Some("main") && ROLE.get().copied() == Some("app") {
             error_box(&format!(
                 "Nightmoth crashed while starting.\n\n{info}\n\nDetails were saved to %APPDATA%\\Nightmoth\\crash.log"
             ));

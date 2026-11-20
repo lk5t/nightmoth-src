@@ -1,23 +1,31 @@
 //! Nightmoth — wallpaper-driven desktop glow-up + autopilot optimizer for Windows 11.
+//!
+//! One exe, three modes:
+//! - `nightmoth.exe`                 the app (window, tray, pop-ups) — normal user rights
+//! - `nightmoth.exe --engine`        the engine (all system changes + Autopilot) — admin
+//! - `nightmoth.exe --setup-engine`  one-time, elevated: registers the engine's scheduled task
 
+mod api;
 mod apps;
 mod autopilot;
 mod changelog;
-mod commands;
 mod config;
 mod gallery;
 mod games;
+mod ipc;
 mod log;
 mod look;
 mod speed;
 mod state;
 mod stats;
 mod toast;
+mod ui_toast;
 mod win;
 
+use serde_json::{json, Value};
+use std::time::Instant;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use std::time::Instant;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub fn fmt_bytes(b: u64) -> String {
@@ -33,8 +41,54 @@ pub fn fmt_bytes(b: u64) -> String {
     }
 }
 
-/// Windows are created here (not in tauri.conf.json) so startup is logged step by step
-/// and the main window appears before anything else is set up.
+/// Entry point: pick the mode from the command line.
+pub fn main_entry() {
+    log::install_panic_hook();
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--engine") {
+        log::set_role("engine");
+        run_engine();
+    } else if args.iter().any(|a| a == "--setup-engine") {
+        log::set_role("setup");
+        match ipc::setup_engine() {
+            Ok(_) => log::log("engine task registered"),
+            Err(e) => {
+                log::log(&format!("engine task setup failed: {e}"));
+                log::error_box(&format!("Nightmoth couldn't set up its background engine:\n\n{e}"));
+            }
+        }
+    } else {
+        log::set_role("app");
+        run_app();
+    }
+}
+
+// ================================================================== engine
+
+fn run_engine() {
+    log::log(&format!("engine {} starting", env!("CARGO_PKG_VERSION")));
+    if ipc::engine_alive() {
+        log::log("engine already running, exiting");
+        return;
+    }
+    state::init();
+    autopilot::run();
+    ipc::serve(api::dispatch);
+}
+
+// ================================================================== app
+
+/// Autostart for the app = HKCU Run key (no admin needed). The app starts the engine.
+fn set_autostart(on: bool) -> Result<(), String> {
+    const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        win::reg_set(win::Hive::HKCU, RUN, "Nightmoth", &win::RegVal::Str(format!("\"{}\" --tray", exe.to_string_lossy())))
+    } else {
+        win::reg_delete(win::Hive::HKCU, RUN, "Nightmoth")
+    }
+}
+
 fn create_main(app: &tauri::App) -> tauri::Result<()> {
     let t = Instant::now();
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -75,34 +129,30 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
-/// Register (or remove) the elevated "start at logon" task.
-pub fn set_autostart(on: bool) -> Result<(), String> {
-    if on {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let exe = win::ps_quote(&exe.to_string_lossy());
-        let script = format!(
-            "$a = New-ScheduledTaskAction -Execute {exe} -Argument '--tray'; \
-             $t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $t.Delay = 'PT15S'; \
-             $p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest; \
-             $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; \
-             Register-ScheduledTask -TaskName 'Nightmoth' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
-        );
-        win::ps(&script)?;
-    } else {
-        let _ = win::ps("Unregister-ScheduledTask -TaskName 'Nightmoth' -Confirm:$false -ErrorAction SilentlyContinue");
-    }
-    state::with_cfg(|c| c.autostart = on);
-    Ok(())
+fn engine_bg(cmd: &'static str) {
+    std::thread::spawn(move || {
+        if let Err(e) = ipc::call(cmd, json!({})) {
+            ui_toast::local("Nightmoth", &e);
+        }
+    });
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Nightmoth", true, None::<&str>)?;
     let optimize = MenuItem::with_id(app, "optimize", "Optimize now", true, None::<&str>)?;
-    let autopilot = CheckMenuItem::with_id(app, "autopilot", "Autopilot", true, state::cfg().autopilot, None::<&str>)?;
+    let autopilot = CheckMenuItem::with_id(app, "autopilot", "Autopilot", true, true, None::<&str>)?;
     let next = MenuItem::with_id(app, "next_wall", "Next wallpaper", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &optimize, &next, &autopilot, &sep, &quit])?;
+
+    // show the real Autopilot state once the engine answers
+    let ap_init = autopilot.clone();
+    std::thread::spawn(move || {
+        if let Ok(c) = ipc::call("get_config", json!({})) {
+            let _ = ap_init.set_checked(c["autopilot"].as_bool().unwrap_or(true));
+        }
+    });
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     let ap = autopilot.clone();
@@ -113,24 +163,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "open" => show_main(app),
-            "optimize" => {
-                std::thread::spawn(|| {
-                    crate::speed::optimize_now();
-                });
-            }
-            "next_wall" => {
-                std::thread::spawn(|| crate::look::slideshow_next());
-            }
+            "optimize" => engine_bg("optimize_now"),
+            "next_wall" => engine_bg("slideshow_next"),
             "autopilot" => {
-                let on = state::with_cfg(|c| {
-                    c.autopilot = !c.autopilot;
-                    c.autopilot
+                let ap = ap.clone();
+                std::thread::spawn(move || {
+                    if let Ok(v) = ipc::call("toggle_autopilot", json!({})) {
+                        let _ = ap.set_checked(v.as_bool().unwrap_or(true));
+                    }
                 });
-                let _ = ap.set_checked(on);
-                toast::show("settings", if on { "Autopilot on" } else { "Autopilot paused" }, "Change it any time from the tray");
             }
             "quit" => {
-                crate::games::end_boost(false);
+                let _ = ipc::call_quiet("shutdown", json!({}));
                 app.exit(0);
             }
             _ => {}
@@ -144,9 +188,55 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn run() {
-    log::install_panic_hook();
-    log::log(&format!("starting Nightmoth {} args={:?}", env!("CARGO_PKG_VERSION"), std::env::args().collect::<Vec<_>>()));
+// ------------------------------------------------------------------ app commands
+
+/// Forward a command to the engine.
+#[tauri::command]
+async fn engine(cmd: String, args: Option<Value>) -> Result<Value, String> {
+    let args = args.unwrap_or_else(|| json!({}));
+    tauri::async_runtime::spawn_blocking(move || ipc::call(&cmd, args))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn ui_log(msg: String) {
+    if msg == "toast window ready" {
+        ui_toast::READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    log::log(&format!("ui: {msg}"));
+}
+
+#[tauri::command]
+fn toast_done() {
+    ui_toast::done();
+}
+
+#[tauri::command]
+fn toast_action(id: String) {
+    std::thread::spawn(move || {
+        let _ = ipc::call_quiet("toast_action", json!({ "id": id }));
+    });
+}
+
+#[tauri::command]
+fn autostart_get() -> bool {
+    win::reg_str(win::Hive::HKCU, r"Software\Microsoft\Windows\CurrentVersion\Run", "Nightmoth").is_some()
+}
+
+#[tauri::command]
+fn autostart_set(on: bool) -> Result<(), String> {
+    set_autostart(on)
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    let _ = ipc::call_quiet("shutdown", json!({}));
+    app.exit(0);
+}
+
+fn run_app() {
+    log::log(&format!("app {} starting args={:?}", env!("CARGO_PKG_VERSION"), std::env::args().collect::<Vec<_>>()));
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             log::log("second launch: showing the existing window");
@@ -154,45 +244,44 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            log::log("setup: main window");
             create_main(app)?;
             let tray_only = std::env::args().any(|a| a == "--tray");
-            let first = !crate::config::Config::load().first_run_done;
-            if !tray_only || first {
+            if !tray_only {
                 show_main(app.handle());
             }
-            log::log("setup: state");
-            state::init(app.handle().clone());
-            log::log("setup: toasts");
-            toast::start();
-            log::log("setup: tray");
             if let Err(e) = build_tray(app) {
-                // the app still works without a tray icon
                 log::log(&format!("tray failed: {e}"));
             }
-
-            if first {
-                std::thread::spawn(|| {
-                    if state::cfg().autostart {
-                        let _ = set_autostart(true);
-                    }
-                    state::with_cfg(|c| c.first_run_done = true);
-                });
-            }
-            // the pop-up window is created a moment later so it never delays the main window
+            ui_toast::start(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(800));
+                std::thread::sleep(std::time::Duration::from_millis(600));
                 if let Err(e) = create_toast(&handle) {
                     log::log(&format!("toast window failed: {e}"));
                 }
             });
-            log::log("setup: autopilot");
-            autopilot::run();
-            log::log("setup: done");
-            if tray_only {
-                toast::show("settings", "Nightmoth is running", "Autopilot is keeping your PC fast");
-            }
+            // start the engine in the background and finish first-run setup
+            std::thread::spawn(move || match ipc::ensure_engine() {
+                Ok(_) => {
+                    log::log("app: engine connected");
+                    if let Ok(c) = ipc::call("get_config", json!({})) {
+                        if !c["first_run_done"].as_bool().unwrap_or(false) {
+                            if c["autostart"].as_bool().unwrap_or(true) {
+                                let _ = set_autostart(true);
+                            }
+                            let _ = ipc::call("set_config", json!({ "patch": { "first_run_done": true } }));
+                        }
+                    }
+                    if tray_only {
+                        ui_toast::local("Nightmoth is running", "Autopilot is keeping your PC fast");
+                    }
+                }
+                Err(e) => {
+                    log::log(&format!("app: engine unavailable: {e}"));
+                    ui_toast::local("Engine not running", &e);
+                }
+            });
+            log::log("app: setup done");
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -204,54 +293,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_config,
-            commands::set_config,
-            commands::overview,
-            commands::live_stats,
-            commands::health,
-            commands::look_state,
-            commands::look_apply,
-            commands::look_preview,
-            commands::look_shuffle,
-            commands::look_lock_accent,
-            commands::desktop_set,
-            commands::preset_apply,
-            commands::gallery_list,
-            commands::slideshow_set,
-            commands::slideshow_next,
-            commands::startup_list,
-            commands::startup_set,
-            commands::cleanup_scan,
-            commands::cleanup_run,
-            commands::debloat_list,
-            commands::debloat_remove,
-            commands::services_list,
-            commands::service_set,
-            commands::privacy_list,
-            commands::privacy_set,
-            commands::power_state,
-            commands::power_set,
-            commands::hags_set,
-            commands::game_mode_set,
-            commands::boot_times,
-            commands::optimize_now,
-            commands::apps_list,
-            commands::app_keep,
-            commands::app_remove,
-            commands::app_reinstall,
-            commands::games_list,
-            commands::game_boost_set,
-            commands::processes,
-            commands::changes_list,
-            commands::change_undo,
-            commands::undo_all,
-            commands::restore_point,
-            commands::autostart_set,
-            commands::toast_done,
-            commands::toast_action,
-            commands::toast_test,
-            commands::quit_app,
-            commands::ui_log,
+            engine,
+            ui_log,
+            toast_done,
+            toast_action,
+            autostart_get,
+            autostart_set,
+            quit_app,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {
