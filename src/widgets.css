@@ -72,3 +72,27 @@ body {
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 10px; }
 .stats div b { display: block; font-size: 1.45em; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stats div span { color: var(--dim); font-size: .82em; }
+
+/* now playing */
+.m-title { font-size: 1.15em; font-weight: 600; margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-artist { color: var(--dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.2em; }
+.m-ctl { display: flex; gap: 8px; margin-top: 12px; }
+.m-ctl button, .dock .app { font: inherit; color: var(--text); background: rgba(255,255,255,.06); border: 1px solid var(--edge); border-radius: 10px; cursor: pointer; transition: background .15s, border-color .15s; }
+.m-ctl button { width: 40px; height: 32px; font-size: 1em; }
+.m-ctl button:hover, .dock .app:hover { background: color-mix(in srgb, var(--acc) 30%, transparent); border-color: color-mix(in srgb, var(--acc) 60%, transparent); }
+#m-play { background: var(--acc); border-color: transparent; }
+
+/* weather */
+.wx-row { display: flex; align-items: baseline; gap: 12px; }
+.wx-icon { font-size: 2.2em; line-height: 1; }
+.wx-temp { font-size: 3em; font-weight: 300; line-height: 1; font-variant-numeric: tabular-nums; }
+.wx-range { color: var(--dim); }
+
+/* notes */
+.notes { margin-top: 8px; white-space: pre-wrap; line-height: 1.5; max-height: calc(160px * var(--scale)); overflow: hidden; }
+
+/* dock */
+.dock { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.dock .app { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 8px 2px; }
+.dock .app i { font-style: normal; width: calc(30px * var(--scale)); height: calc(30px * var(--scale)); border-radius: 9px; background: var(--acc); display: grid; place-items: center; font-weight: 700; }
+.dock .app span { font-size: .72em; color: var(--dim); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 3px; }

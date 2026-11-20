@@ -93,7 +93,118 @@ fn apply(f: SetComposition, state: u32, gradient: u32) {
     }
 }
 
-pub fn start() {
+// ------------------------------------------------------------------ Windows 11 helper
+
+/// Must match the helper DLL.
+const CLSID_TAP: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x6b3a2b1e_8f4c_4e3b_9a51_4e49474854d0);
+
+type InitXamlDiag = unsafe extern "system" fn(
+    *const u16,
+    u32,
+    *const u16,
+    *const u16,
+    windows_sys::core::GUID,
+    *const u16,
+) -> windows_sys::core::HRESULT;
+
+fn windows_build() -> u32 {
+    crate::win::reg_str(crate::win::Hive::HKLM, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+fn explorer_pid() -> u32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let cls = wide("Shell_TrayWnd");
+    unsafe {
+        let h = FindWindowW(cls.as_ptr(), std::ptr::null());
+        if h.is_null() {
+            return 0;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, &mut pid);
+        pid
+    }
+}
+
+/// Tell the helper (inside Explorer) whether to hide the taskbar background.
+fn set_flag(on: bool) {
+    let _ = crate::win::reg_set(crate::win::Hive::HKCU, r"Software\Nightmoth", "TaskbarClear", &crate::win::RegVal::Dword(on as u32));
+}
+
+fn inject(dll: &std::path::Path, pid: u32, n: u32) -> Result<(), String> {
+    let lib = wide("Windows.UI.Xaml.dll");
+    unsafe {
+        let h = windows_sys::Win32::System::LibraryLoader::LoadLibraryW(lib.as_ptr());
+        if h.is_null() {
+            return Err("XAML not available".into());
+        }
+        let f = GetProcAddress(h, b"InitializeXamlDiagnosticsEx\0".as_ptr()).ok_or("no InitializeXamlDiagnosticsEx")?;
+        let f: InitXamlDiag = std::mem::transmute(f);
+        let endpoint = wide(&format!("NightmothTaskbar{pid}x{n}"));
+        let path = wide(&dll.to_string_lossy());
+        let hr = f(endpoint.as_ptr(), pid, std::ptr::null(), path.as_ptr(), CLSID_TAP, std::ptr::null());
+        if hr < 0 {
+            return Err(format!("0x{:08X}", hr as u32));
+        }
+    }
+    Ok(())
+}
+
+/// Keeps the helper loaded in Explorer (it's reloaded when Explorer restarts) while the
+/// taskbar should be clear. If Explorer restarts right after a load twice, it stops for good.
+fn helper_loop(dll: std::path::PathBuf) {
+    if windows_build() < 22000 || !dll.exists() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut injected_pid = 0u32;
+        let mut injected_at = std::time::Instant::now();
+        let mut attempts = 0u32;
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let (style, _) = lock(&WANTED).clone();
+            let want = style == "clear" || style == "tint";
+            set_flag(want);
+            if !want {
+                continue;
+            }
+            let Ok(c) = crate::ipc::call_quiet("get_config", serde_json::json!({})) else { continue };
+            if !c["taskbar_helper"].as_bool().unwrap_or(true) || c["taskbar_helper_crashes"].as_u64().unwrap_or(0) >= 2 {
+                continue;
+            }
+            let pid = explorer_pid();
+            if pid == 0 || pid == injected_pid {
+                continue;
+            }
+            // Explorer was replaced soon after we loaded the helper: count it as a crash
+            if injected_pid != 0 && injected_at.elapsed() < Duration::from_secs(90) {
+                let n = c["taskbar_helper_crashes"].as_u64().unwrap_or(0) + 1;
+                let _ = crate::ipc::call_quiet("set_config", serde_json::json!({ "patch": { "taskbar_helper_crashes": n } }));
+                crate::log::log(&format!("taskbar helper: Explorer restarted right after loading ({n})"));
+                if n >= 2 {
+                    crate::ui_toast::local("Invisible taskbar paused", "Explorer didn't like the helper on this PC — using the basic effect");
+                    injected_pid = pid;
+                    continue;
+                }
+            }
+            // give a fresh Explorer time to build its taskbar
+            std::thread::sleep(Duration::from_secs(4));
+            attempts += 1;
+            match inject(&dll, pid, attempts) {
+                Ok(_) => crate::log::log("taskbar helper loaded"),
+                Err(e) => crate::log::log(&format!("taskbar helper not loaded: {e}")),
+            }
+            injected_pid = pid;
+            injected_at = std::time::Instant::now();
+        }
+    });
+}
+
+pub fn start(helper_dll: Option<std::path::PathBuf>) {
+    if let Some(dll) = helper_dll {
+        helper_loop(dll);
+    }
     std::thread::spawn(|| {
         let Some(f) = api() else {
             crate::log::log("taskbar: composition API not available");

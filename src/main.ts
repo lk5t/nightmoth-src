@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open, confirm } from "@tauri-apps/plugin-dialog";
+import { open, save, confirm } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
 window.addEventListener("error", (e) => invoke("ui_log", { msg: `main error: ${e.message} @ ${e.filename}:${e.lineno}` }).catch(() => {}));
@@ -45,7 +45,9 @@ function snack(msg: string, err = false) {
 }
 
 /** Commands handled by the app itself; everything else runs in the elevated engine. */
-const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo"]);
+const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo",
+  "storage_scan", "storage_recycle", "roblox_state", "roblox_apply", "roblox_restore", "monitors_list", "monitor_set",
+  "look_export_file", "look_import_file", "cursor_set", "theme_apps_now"]);
 
 function raw<T = Any>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return LOCAL.has(cmd) ? invoke<T>(cmd, args) : invoke<T>("engine", { cmd, args: args ?? {} });
@@ -110,6 +112,7 @@ const ico = (d: string) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const ICONS: Record<string, string> = {
   home: ico('<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>'),
+  progress: ico('<path d="M3 20h18"/><path d="M6 16l4-5 3 3 5-7"/><path d="M15 7h3v3"/>'),
   look: ico('<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="8.5" r="1.5"/>'),
   speed: ico('<path d="M12 14l4-6"/><path d="M4.9 19a9 9 0 1 1 14.2 0"/>'),
   autopilot: ico('<path d="M12 2l3 7 7 .6-5.3 4.6L18.4 21 12 17.3 5.6 21l1.7-6.8L2 9.6 9 9z"/>'),
@@ -148,7 +151,7 @@ q("#min").onclick = () => win.minimize();
 q("#close").onclick = () => win.hide();
 
 const PAGES: Record<string, Page> = {};
-const NAV = ["home", "look", "speed", "autopilot", "games", "safety", "settings"];
+const NAV = ["home", "progress", "look", "speed", "autopilot", "games", "safety", "settings"];
 
 function go(name: string) {
   timers.forEach(clearInterval);
@@ -275,6 +278,57 @@ PAGES.home = {
   },
 };
 
+/* ================================================================ progress */
+
+function delta(before: number, after: number, lowerIsBetter: boolean, fmt: (n: number) => string): string {
+  if (!before || before === after) return `<span class="muted">no change yet</span>`;
+  const better = lowerIsBetter ? after < before : after > before;
+  const pct = Math.abs(((after - before) / before) * 100);
+  return `<span class="${better ? "ok" : "red"}">${better ? "▲" : "▼"} ${pct.toFixed(0)}% ${better ? "better" : "worse"}</span> <span class="muted">from ${fmt(before)}</span>`;
+}
+
+PAGES.progress = {
+  title: "Progress",
+  sub: "What Nightmoth changed — measured",
+  async render(el) {
+    const p = await call<Any>("progress");
+    const a = p.first, b = p.latest;
+    const secs = (ms: number) => (ms / 1000).toFixed(1) + " s";
+    const tile = (label: string, value: string, d: string) => `<div class="card stat"><div class="label">${label}</div><div class="value">${value}</div><div style="font-size:12.5px">${d}</div></div>`;
+    const since = a ? ago(a.t).replace(" ago", "") : "";
+    const hist: Any[] = p.history || [];
+    const max = Math.max(100, ...hist.map((h) => h.score));
+    const w = p.week, lw = p.last_week;
+    const vs = (now: number, prev: number, f: (n: number) => string = String) => `${f(now)} <small>${prev ? `vs ${f(prev)} last week` : ""}</small>`;
+    el.innerHTML = `
+      <div class="card panic"><div class="row between"><div><h3>Before vs now</h3>
+        <p class="sub" style="margin:0">${a && b && a.t !== b.t ? `Measured while your PC was idle, first ${since} ago and again ${ago(b.t)}.` : "The first measurement was just taken — come back in a few days to see the difference."}</p></div>
+        <button class="btn small" id="snap">Measure now</button></div></div>
+      ${b ? `<div class="grid g4" style="margin-top:14px">
+        ${tile("Health score", `${b.score}<small>/100</small>`, delta(a.score, b.score, false, String))}
+        ${tile("Boot time", b.boot_ms ? secs(b.boot_ms) : "–", delta(a.boot_ms, b.boot_ms, true, secs))}
+        ${tile("Startup apps", String(b.startup_apps), delta(a.startup_apps, b.startup_apps, true, String))}
+        ${tile("Idle memory", `${(b.idle_ram_mb / 1024).toFixed(1)}<small> GB</small>`, delta(a.idle_ram_mb, b.idle_ram_mb, true, (n) => (n / 1024).toFixed(1) + " GB"))}
+        ${tile("Idle CPU", `${b.idle_cpu.toFixed(0)}<small>%</small>`, delta(a.idle_cpu, b.idle_cpu, true, (n) => n.toFixed(0) + "%"))}
+        ${tile("Junk waiting", fmtBytes(b.junk_bytes), delta(a.junk_bytes, b.junk_bytes, true, fmtBytes))}
+        ${tile("Free space", fmtBytes(b.disk_free), delta(a.disk_free, b.disk_free, false, fmtBytes))}
+        ${tile("Installed apps", String(b.apps), delta(a.apps, b.apps, true, String))}
+      </div>` : ""}
+      ${hist.length > 1 ? `<div class="section-title"><h2>Health over time</h2></div>
+        <div class="card"><div class="chart">${hist.map((h, i) => `<div class="${i === hist.length - 1 ? "last" : ""}" style="height:${(h.score / max) * 100}%" title="${new Date(h.t * 1000).toLocaleDateString()}"><span>${h.score}</span></div>`).join("")}</div></div>` : ""}
+      <div class="section-title"><h2>This week</h2><span class="muted">since ${new Date(p.week_start * 1000).toLocaleDateString()}</span></div>
+      <div class="grid g4">
+        <div class="card stat"><div class="label">Freed</div><div class="value">${vs(w.freed_bytes, lw.freed_bytes, fmtBytes)}</div></div>
+        <div class="card stat"><div class="label">Apps removed</div><div class="value">${vs(w.apps_removed, lw.apps_removed)}</div></div>
+        <div class="card stat"><div class="label">Games boosted</div><div class="value">${vs(w.games_boosted, lw.games_boosted)}</div></div>
+        <div class="card stat"><div class="label">Startup blocked</div><div class="value">${vs(w.startup_blocked, lw.startup_blocked)}</div></div>
+      </div>
+      <p class="sub" style="margin-top:12px">All time: ${p.removed} unused apps removed · ${p.fixes} things repaired or reviewed from other tools.</p>`;
+    const snap = q<HTMLButtonElement>("#snap");
+    snap.onclick = () => busy(snap, async () => { await call("snapshot_now"); go("progress"); });
+  },
+};
+
 /* ================================================================ look */
 
 const IMG_EXT = ["jpg", "jpeg", "png", "bmp", "webp", "gif", "tif", "tiff"];
@@ -336,7 +390,7 @@ PAGES.look = {
       <div class="card"><div class="list">
         <div class="item"><div class="info"><div class="name">Show widgets on the desktop</div><div class="desc">They sit behind your windows, never take clicks and hide while you game</div></div>${toggle('data-cfg="widgets_on"', c.widgets_on)}</div>
         <div class="item"><div class="info"><div class="name">Widgets</div><div class="desc">Click to add or remove</div></div>
-          <div class="chips" id="wkinds">${[["clock", "Clock"], ["calendar", "Calendar"], ["system", "System monitor"], ["week", "Nightmoth week"]].map(([id, n]) => `<button class="chip ${(c.widgets || []).includes(id) ? "on" : ""}" data-wk="${id}">${n}</button>`).join("")}</div></div>
+          <div class="chips" id="wkinds">${[["clock", "Clock"], ["calendar", "Calendar"], ["system", "System monitor"], ["media", "Now playing"], ["weather", "Weather"], ["notes", "Notes"], ["dock", "App dock"], ["week", "Nightmoth week"]].map(([id, n]) => `<button class="chip ${(c.widgets || []).includes(id) ? "on" : ""}" data-wk="${id}">${n}</button>`).join("")}</div></div>
         <div class="item"><div class="info"><div class="name">Where</div><div class="desc" id="spotdesc">${c.widget_spot === "auto" || !c.widget_spot ? `Automatic — the calmest part of your wallpaper${a ? ` (${esc(a.empty_area)})` : ""}` : esc(c.widget_spot)}</div></div>
           <button class="btn small ${c.widget_spot === "auto" ? "primary" : ""}" id="spotauto">Auto</button>
           <div class="spots" id="spots">${["top left", "top", "top right", "left", "center", "right", "bottom left", "bottom", "bottom right"].map((n, i) => `<button title="${n}" data-spot="${n}" class="${c.widget_spot === n ? "on" : c.widget_spot === "auto" && a && i === a.calm_cell ? "auto" : ""}"></button>`).join("")}</div></div>
@@ -344,7 +398,28 @@ PAGES.look = {
           <select data-cfg="widget_style">${[["glass", "Smoked glass"], ["solid", "Solid black"], ["minimal", "Minimal (text only)"]].map(([v, n]) => `<option value="${v}" ${c.widget_style === v ? "selected" : ""}>${n}</option>`).join("")}</select></div>
         <div class="item"><div class="info"><div class="name">Size</div></div><input type="range" min="0.8" max="1.4" step="0.05" id="wscale" value="${c.widget_scale ?? 1}"></div>
         <div class="item"><div class="info"><div class="name">Match wallpaper colour</div><div class="desc">Off = Nightmoth red</div></div>${toggle('data-cfg="widget_accent"', c.widget_accent)}</div>
+        <div class="item"><div class="info"><div class="name">Weather for</div><div class="desc" id="wxdesc">${c.weather_city ? esc(c.weather_city) : "Type your city (weather from open-meteo.com, no account)"}</div></div>
+          <input type="text" id="wxcity" placeholder="City" value="${esc(c.weather_city || "")}" style="width:160px"><button class="btn small" id="wxset">Set</button></div>
+        <div class="item" style="align-items:flex-start"><div class="info"><div class="name">Notes</div><div class="desc">Shown on the Notes widget</div></div>
+          <textarea id="notes" rows="3" style="width:300px;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font:inherit;resize:vertical">${esc(c.notes || "")}</textarea></div>
+        <div class="item"><div class="info"><div class="name">App dock</div><div class="desc" id="dockdesc">${(c.dock || []).length ? (c.dock as string[]).map((d) => esc(d.split("\\").pop())).join(" · ") : "No apps yet"}</div></div>
+          <button class="btn small" id="dockadd">Add app</button>${(c.dock || []).length ? `<button class="btn small ghost" id="dockclear">Clear</button>` : ""}</div>
       </div></div>
+
+      <div class="section-title"><h2>Beyond the wallpaper</h2></div>
+      <div class="card"><div class="list">
+        <div class="item"><div class="info"><div class="name">Theme my other apps</div><div class="desc">Windows Terminal and VS Code take the wallpaper's colours (originals backed up)</div></div>
+          <button class="btn small ghost" id="themenow">Apply now</button>${toggle('data-cfg="theme_apps"', c.theme_apps)}</div>
+        <div class="item"><div class="info"><div class="name">Accent-coloured mouse pointer</div><div class="desc">The arrow follows your accent colour</div></div>${toggle('id="cursoron"', c.accent_cursor)}</div>
+        <div class="item"><div class="info"><div class="name">Accent-coloured folders</div><div class="desc">Folder icons in your accent colour (folders showing a picture preview keep it)</div></div>${toggle('id="folderson"', c.accent_folders)}</div>
+      </div></div>
+
+      <div class="section-title"><h2>Share looks</h2><span class="muted">Wallpaper, colours, taskbar and widgets in one file</span></div>
+      <div class="card"><div class="row between"><p class="sub" style="margin:0">Send your setup to a friend, or keep a backup of a look you love.</p>
+        <div class="row"><button class="btn" id="lexport">Export this look</button><button class="btn primary" id="limport">Import a look</button></div></div></div>
+
+      <div class="section-title"><h2>Screens</h2><span class="muted">A different wallpaper on each screen</span></div>
+      <div class="card" id="screens">${loading("Finding screens")}</div>
 
       <div class="section-title"><h2>Tidy desktop</h2><span class="muted">Loose files sorted into folders · shortcuts stay</span></div>
       <div class="card" id="tidy">${loading("Looking at your desktop")}</div>
@@ -437,6 +512,64 @@ PAGES.look = {
     const wscale = q<HTMLInputElement>("#wscale");
     wscale.onchange = () => setCfg({ widget_scale: Number(wscale.value) });
 
+    q("#wxset").onclick = async () => {
+      const city = q<HTMLInputElement>("#wxcity").value.trim();
+      if (!city) { await setCfg({ weather_city: "", weather_lat: 0, weather_lon: 0 }); q("#wxdesc").textContent = "No city"; return; }
+      try {
+        const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?count=1&name=${encodeURIComponent(city)}`).then((x) => x.json());
+        const hit = r.results?.[0];
+        if (!hit) { snack("Couldn't find that city", true); return; }
+        const label = `${hit.name}${hit.country ? ", " + hit.country : ""}`;
+        await setCfg({ weather_city: label, weather_lat: hit.latitude, weather_lon: hit.longitude });
+        q("#wxdesc").textContent = label;
+        if (!kinds.includes("weather")) { kinds = [...kinds, "weather"]; await setCfg({ widgets: kinds }); q('[data-wk="weather"]').classList.add("on"); }
+        snack(`Weather for ${label}`);
+      } catch { snack("No internet connection", true); }
+    };
+    const notes = q<HTMLTextAreaElement>("#notes");
+    let noteTimer = 0;
+    notes.oninput = () => { clearTimeout(noteTimer); noteTimer = window.setTimeout(() => setCfg({ notes: notes.value }), 600); };
+    q("#dockadd").onclick = async () => {
+      const f = await open({ multiple: false, filters: [{ name: "Apps", extensions: ["exe", "lnk", "url"] }] });
+      if (typeof f !== "string") return;
+      const dock = [...(c.dock || []), f].slice(0, 10);
+      await setCfg({ dock });
+      if (!kinds.includes("dock")) { kinds = [...kinds, "dock"]; await setCfg({ widgets: kinds }); }
+      go("look");
+    };
+    const dc = document.getElementById("dockclear");
+    if (dc) dc.onclick = async () => { await setCfg({ dock: [] }); go("look"); };
+    q("#themenow").onclick = async () => { const n = await call<number>("theme_apps_now", { accent }); snack(n ? `Themed ${n} app${n > 1 ? "s" : ""}` : "Windows Terminal or VS Code not found"); };
+    q<HTMLInputElement>("#cursoron").onchange = (e) => call("cursor_set", { on: (e.target as HTMLInputElement).checked, accent }).then(() => snack("Saved"));
+    q<HTMLInputElement>("#folderson").onchange = (e) => call("folders_set", { on: (e.target as HTMLInputElement).checked }).then(() => snack("Saved"));
+    q("#lexport").onclick = async () => {
+      const path = await save({ defaultPath: "My look.nightmoth", filters: [{ name: "Nightmoth look", extensions: ["nightmoth"] }] });
+      if (!path) return;
+      await call("look_export_file", { path });
+      snack("Look exported");
+    };
+    q("#limport").onclick = async () => {
+      const f = await open({ multiple: false, filters: [{ name: "Nightmoth look", extensions: ["nightmoth", "json"] }] });
+      if (typeof f !== "string") return;
+      snack("Applying look…");
+      const name = await call<string>("look_import_file", { path: f });
+      snack(`"${name}" applied`);
+      go("look");
+    };
+    raw<Any[]>("monitors_list").then((mons) => {
+      const box = q("#screens");
+      if (!box) return;
+      if (mons.length < 2) { box.innerHTML = `<p class="sub" style="margin:0">Only one screen connected. Plug in another and each can have its own wallpaper.</p>`; return; }
+      box.innerHTML = `<div class="list">${mons.map((m, i) => `<div class="item"><div class="info"><div class="name">Screen ${i + 1} ${m.primary ? `<span class="badge red">Main · drives the theme</span>` : ""}</div>
+        <div class="desc">${m.w}×${m.h} · ${esc((m.wallpaper || "").split("\\").pop() || "no wallpaper")}</div></div><button class="btn small" data-mon="${esc(m.id)}" data-primary="${m.primary ? 1 : 0}">Choose wallpaper</button></div>`).join("")}</div>`;
+      qa<HTMLButtonElement>("[data-mon]", box).forEach((b) => (b.onclick = async () => {
+        const f = await open({ multiple: false, filters: [{ name: "Images", extensions: IMG_EXT }] });
+        if (typeof f !== "string") return;
+        await busy(b, () => call("monitor_set", { id: b.dataset.mon, path: f, primary: b.dataset.primary === "1" }));
+        go("look");
+      }));
+    }).catch(() => { const box = q("#screens"); if (box) box.innerHTML = `<p class="sub" style="margin:0">Couldn't read your screens.</p>`; });
+
     const drawTidy = async () => {
       const box = q("#tidy");
       if (!box) return;
@@ -504,7 +637,8 @@ PAGES.speed = {
   sub: "Only tweaks that actually make a difference",
   async render(el) {
     const tabs: [string, string][] = [
-      ["startup", "Startup"], ["cleanup", "Cleanup"], ["debloat", "Debloat"], ["services", "Services"],
+      ["startup", "Startup"], ["cleanup", "Cleanup"], ["deep", "Deep clean"], ["storage", "Storage"], ["repair", "Repair"],
+      ["updates", "App updates"], ["network", "Network"], ["debloat", "Debloat"], ["services", "Services"],
       ["privacy", "Privacy & ads"], ["power", "Power"], ["boot", "Boot time"],
     ];
     el.innerHTML = `<div class="seg" id="seg">${tabs.map(([id, n]) => `<button data-t="${id}" class="${id === speedTab ? "active" : ""}">${n}</button>`).join("")}</div><div id="sp"></div>`;
@@ -518,16 +652,136 @@ PAGES.speed = {
 const SPEED: Record<string, (el: HTMLElement) => Promise<void>> = {
   async startup(el) {
     const items = await call<Any[]>("startup_list");
+    const c = await call<Any>("get_config");
+    const delayed: Any[] = c.delayed || [];
+    const isDelayed = (id: string) => delayed.some((d) => d.id === id);
     const on = items.filter((i) => i.enabled).length;
     el.innerHTML = `<div class="card"><div class="row between"><div><h3>Apps that start with Windows</h3>
-      <p class="sub">${on} of ${items.length} enabled. Turning things off here is the #1 way to boot faster. Autopilot blocks new ones automatically.</p></div></div>
+      <p class="sub">${on} of ${items.length} enabled. Turning things off is the #1 way to boot faster. <b>Delay</b> keeps an app but starts it 60 s after login, so your desktop is ready first. Autopilot blocks new ones automatically.</p></div></div>
       <div class="list">${items.map((i) => `
         <div class="item"><div class="info"><div class="name">${esc(i.name)}</div><div class="desc" title="${esc(i.command)}">${esc(i.location)} · ${esc(i.command)}</div></div>
-          <span class="badge ${i.impact === "High" ? "red" : ""}">${esc(i.impact)}</span>${toggle(`data-id="${esc(i.id)}"`, i.enabled)}</div>`).join("") || `<div class="empty">Nothing starts with Windows. Nice.</div>`}
+          <span class="badge ${i.impact === "High" ? "red" : ""}">${esc(i.impact)}</span>
+          ${i.id.startsWith("task:") ? "" : isDelayed(i.id) ? `<button class="btn small" data-undelay="${esc(i.id)}">Delayed · undo</button>` : `<button class="btn small ghost" data-delay="${esc(i.id)}">Delay</button>`}
+          ${isDelayed(i.id) ? "" : toggle(`data-id="${esc(i.id)}"`, i.enabled)}</div>`).join("") || `<div class="empty">Nothing starts with Windows. Nice.</div>`}
       </div></div>`;
     qa<HTMLInputElement>("[data-id]", el).forEach((t) => {
       t.onchange = () => call("startup_set", { id: t.dataset.id, enabled: t.checked }).then(() => snack("Saved")).catch(() => (t.checked = !t.checked));
     });
+    qa<HTMLButtonElement>("[data-delay]", el).forEach((b) => (b.onclick = () => busy(b, async () => { await call("startup_delay", { id: b.dataset.delay, on: true }); snack("Starts 60 s after login now"); await SPEED.startup(el); })));
+    qa<HTMLButtonElement>("[data-undelay]", el).forEach((b) => (b.onclick = () => busy(b, async () => { await call("startup_delay", { id: b.dataset.undelay, on: false }); snack("Back to normal"); await SPEED.startup(el); })));
+  },
+
+  async deep(el) {
+    const d = await call<Any>("deep_scan");
+    const total = d.items.reduce((n: number, i: Any) => n + (i.bytes || 0), 0);
+    el.innerHTML = `<div class="card"><div class="row between"><div><h3>Deep clean${total ? ` · ${fmtBytes(total)}+ found` : ""}</h3>
+      <p class="sub">The big stuff normal cleaners skip. Deleted straight away. Autopilot runs this by itself when you're away${d.last ? ` · last run ${ago(d.last)}` : ""}.</p></div>
+      <button class="btn primary" id="drun">Deep clean selected</button></div>
+      <div class="list">${d.items.map((i: Any) => `
+        <div class="item"><input type="checkbox" data-d="${i.id}" checked style="accent-color:var(--red)">
+          <div class="info"><div class="name">${esc(i.name)}</div><div class="desc">${esc(i.desc)}</div></div>
+          <span class="mono ${i.bytes > 1e9 ? "red" : "muted"}">${i.bytes ? fmtBytes(i.bytes) : "—"}</span></div>`).join("")}</div>
+      ${d.report?.length ? `<p class="sub" style="margin:12px 0 0">Last time: ${d.report.filter((r: Any) => r[1] > 0).map((r: Any) => `${esc(r[0])} ${fmtBytes(r[1])}`).join(" · ") || "nothing to remove"}</p>` : ""}</div>`;
+    const btn = q<HTMLButtonElement>("#drun", el);
+    btn.onclick = () => busy(btn, async () => {
+      const ids = qa<HTMLInputElement>("[data-d]", el).filter((x) => x.checked).map((x) => x.dataset.d);
+      snack("Deep cleaning — the Windows components step can take a few minutes…");
+      const r = await call<Any>("deep_run", { ids });
+      snack(`Freed ${fmtBytes(r.total)}`);
+      await SPEED.deep(el);
+    });
+  },
+
+  async storage(el) {
+    el.innerHTML = `<div class="card"><div class="row between"><div><h3>What's using your space</h3>
+      <p class="sub">Biggest files, duplicates and old downloads in your own folders. Deleting sends them to the Recycle Bin.</p></div>
+      <button class="btn primary" id="sscan">Scan my folders</button></div><div id="sres"></div></div>`;
+    const scan = q<HTMLButtonElement>("#sscan", el);
+    const row = (f: Any, extra = "") => `<div class="item"><input type="checkbox" data-f="${esc(f.path)}" style="accent-color:var(--red)">
+      <div class="info"><div class="name">${esc(f.name)}</div><div class="desc" title="${esc(f.path)}">${esc(f.path)}${extra}</div></div><span class="mono">${fmtBytes(f.size)}</span></div>`;
+    scan.onclick = () => busy(scan, async () => {
+      const r = await call<Any>("storage_scan");
+      const dupSave = r.duplicates.reduce((n: number, g: Any[]) => n + g[0].size * (g.length - 1), 0);
+      q("#sres", el).innerHTML = `<p class="sub" style="margin:10px 0">${r.scanned.toLocaleString()} files checked in ${r.seconds.toFixed(0)} s.</p>
+        <div class="section-title"><h2>Biggest files</h2></div><div class="list">${r.large.map((f: Any) => row(f, ` · ${ago(f.modified)}`)).join("") || `<div class="empty">No files over 500 MB.</div>`}</div>
+        <div class="section-title"><h2>Duplicates</h2><span class="muted">${fmtBytes(dupSave)} wasted · the oldest copy is kept unticked</span></div>
+        <div class="list">${r.duplicates.map((g: Any[]) => g.map((f: Any, i: number) => i === 0 ? `<div class="item"><span class="badge white">Keep</span><div class="info"><div class="name">${esc(f.name)}</div><div class="desc">${esc(f.path)}</div></div><span class="mono">${fmtBytes(f.size)}</span></div>` : row(f, " · copy")).join("")).join("") || `<div class="empty">No duplicates found.</div>`}</div>
+        <div class="section-title"><h2>Downloads untouched for 3+ months</h2></div><div class="list">${r.old_downloads.map((f: Any) => row(f, ` · ${ago(f.modified)}`)).join("") || `<div class="empty">Nothing old in Downloads.</div>`}</div>
+        <div class="row" style="margin-top:12px"><button class="btn primary" id="srm">Move selected to Recycle Bin</button></div>`;
+      const rm = q<HTMLButtonElement>("#srm", el);
+      rm.onclick = () => busy(rm, async () => {
+        const paths = qa<HTMLInputElement>("[data-f]", el).filter((x) => x.checked).map((x) => x.dataset.f);
+        if (!paths.length) return;
+        const n = await call<number>("storage_recycle", { paths });
+        snack(`${n} files moved to the Recycle Bin`);
+        qa<HTMLInputElement>("[data-f]", el).filter((x) => x.checked).forEach((x) => x.closest(".item")?.remove());
+      });
+    });
+  },
+
+  async repair(el) {
+    const r = await call<Any>("fixer_scan");
+    const bad = r.found.filter((f: Any) => f.kind === "fix");
+    const good = r.found.filter((f: Any) => f.kind === "keep");
+    const hist: Any[] = (r.history || []).filter((h: Any) => h.action === "fixed").slice().reverse();
+    el.innerHTML = `<div class="card ${bad.length ? "panic" : ""}"><div class="row between"><div><h3>${bad.length ? `${bad.length} things another tool broke` : "Nothing broken by other tools"}</h3>
+      <p class="sub" style="margin:0">Other optimizers and debloat scripts often switch off Windows Update, Defender or core services, or add "tweaks" that cause stutter. Nightmoth puts the harmful ones back automatically and keeps the good ones. Everything can be undone from Safety.</p></div>
+      ${bad.length ? `<button class="btn primary" id="fixall">Fix all</button>` : ""}</div>
+      ${bad.length ? `<div class="list" style="margin-top:10px">${bad.map((f: Any) => `<div class="item"><span class="badge red">Fix</span><div class="info"><div class="name">${esc(f.title)}</div><div class="desc">${esc(f.detail)}${f.restart ? " · needs a restart" : ""}</div></div></div>`).join("")}</div>` : ""}</div>
+      ${good.length ? `<div class="section-title"><h2>Good tweaks kept</h2></div><div class="card"><div class="list">${good.map((f: Any) => `<div class="item"><span class="badge white">Kept</span><div class="info"><div class="name">${esc(f.title)}</div><div class="desc">${esc(f.detail)}</div></div></div>`).join("")}</div></div>` : ""}
+      <div class="section-title"><h2>Repaired before</h2></div><div class="card"><div class="list">${hist.map((h: Any) => `<div class="item"><div class="info"><div class="name">${esc(h.title)}</div><div class="desc">${ago(h.t)} · ${esc(h.detail)}</div></div></div>`).join("") || `<div class="empty">Nothing yet.</div>`}</div></div>`;
+    const fa = document.getElementById("fixall") as HTMLButtonElement | null;
+    if (fa) fa.onclick = () => busy(fa, async () => {
+      const x = await call<Any>("fixer_fix");
+      snack(`${x.fixed} repaired${x.restart ? " · restart to finish" : ""}`, x.errors?.length > 0);
+      await SPEED.repair(el);
+    });
+  },
+
+  async updates(el) {
+    el.innerHTML = `<div class="card">${loading("Asking winget for updates")}</div>`;
+    const list = await call<Any[]>("updates_list");
+    el.innerHTML = `<div class="card"><div class="row between"><div><h3>${list.length ? `${list.length} apps can be updated` : "Everything is up to date"}</h3>
+      <p class="sub" style="margin:0">Through winget, Windows' own package manager. Autopilot installs updates by itself when you're away and plugged in.</p></div>
+      ${list.length ? `<button class="btn primary" id="uall">Update all</button>` : ""}</div>
+      <div class="list" style="margin-top:8px">${list.map((u) => `<div class="item"><div class="info"><div class="name">${esc(u.name)}</div><div class="desc mono">${esc(u.id)} · ${esc(u.version)} → ${esc(u.available)}</div></div><button class="btn small" data-up="${esc(u.id)}">Update</button></div>`).join("")}</div></div>`;
+    const all = document.getElementById("uall") as HTMLButtonElement | null;
+    if (all) all.onclick = () => busy(all, async () => { await call("updates_run", {}); await SPEED.updates(el); });
+    qa<HTMLButtonElement>("[data-up]", el).forEach((b) => (b.onclick = () => busy(b, async () => { await call("updates_run", { id: b.dataset.up }); b.closest(".item")?.remove(); })));
+  },
+
+  async network(el) {
+    const c = await call<Any>("get_config");
+    el.innerHTML = `<div class="grid g2">
+      <div class="card"><div class="row between"><h3>Fastest DNS</h3><button class="btn primary" id="dnsgo">Test now</button></div>
+        <p class="sub">DNS turns names like roblox.com into addresses. A faster one makes every site and game lobby connect quicker. Tested from your PC; switching can be undone from Safety.</p>
+        <div class="list" id="dnsres"></div>
+        <div class="item" style="border-top:1px solid var(--border);margin-top:6px"><div class="info"><div class="name">Pick the fastest automatically</div><div class="desc">Re-tested every two weeks; only switches when another is clearly faster</div></div>${toggle('data-cfg="dns_auto"', c.dns_auto)}</div></div>
+      <div class="card"><h3>Ping</h3><p class="sub">Round trip to Cloudflare, Google and a game server region.</p>
+        <div class="grid g3" id="pings">${["1.1.1.1", "8.8.8.8", "9.9.9.9"].map((ip) => `<div class="stat"><div class="label">${ip}</div><div class="value" data-ping="${ip}">–</div></div>`).join("")}</div></div>
+    </div>`;
+    bindCfg(el);
+    const go = q<HTMLButtonElement>("#dnsgo", el);
+    go.onclick = () => busy(go, async () => {
+      const res = await call<Any[]>("dns_bench");
+      const best = res.find((r) => !r.failed);
+      q("#dnsres", el).innerHTML = res.map((r) => `<div class="item"><div class="info"><div class="name">${esc(r.name)} ${r.current ? `<span class="badge white">In use</span>` : ""} ${r === best ? `<span class="badge red">Fastest</span>` : ""}</div>
+        <div class="desc mono">${esc(r.primary)} ${esc(r.secondary)}${r.failed ? ` · ${r.failed} lookups failed` : ""}</div></div><span class="mono">${r.ms.toFixed(0)} ms</span>
+        ${r.current ? "" : `<button class="btn small" data-dns="${esc(r.name)}|${esc(r.primary)}|${esc(r.secondary)}">Use</button>`}</div>`).join("");
+      qa<HTMLButtonElement>("[data-dns]", el).forEach((b) => (b.onclick = () => busy(b, async () => {
+        const [name, primary, secondary] = b.dataset.dns!.split("|");
+        await call("dns_set", { name, primary, secondary });
+        snack(`Using ${name}`);
+      })));
+    });
+    const pings = async () => {
+      for (const el2 of qa<HTMLElement>("[data-ping]", el)) {
+        const ms = await raw<number | null>("net_ping", { ip: el2.dataset.ping }).catch(() => null);
+        el2.innerHTML = ms == null ? `<small>no reply</small>` : `${ms}<small> ms</small>`;
+      }
+    };
+    pings();
+    timers.push(window.setInterval(pings, 4000));
   },
 
   async cleanup(el) {
@@ -603,6 +857,9 @@ const SPEED: Record<string, (el: HTMLElement) => Promise<void>> = {
 
   async power(el) {
     const p = await call<Any>("power_state");
+    const v = await call<Any>("visuals_state");
+    const pw = await call<Any>("power_info");
+    const c = await call<Any>("get_config");
     el.innerHTML = `<div class="grid g2">
       <div class="card"><h3>Power plan</h3><p class="sub">Ultimate Performance keeps the CPU at full speed. Game boosts switch to it automatically.</p>
         <div class="list">${p.plans.map((pl: Any) => `
@@ -612,7 +869,16 @@ const SPEED: Record<string, (el: HTMLElement) => Promise<void>> = {
       <div class="card"><h3>Gaming</h3><p class="sub">Windows' own performance switches.</p><div class="list">
         <div class="item"><div class="info"><div class="name">Windows Game Mode</div><div class="desc">Prioritises games, pauses Windows Update installs while playing</div></div>${toggle('id="gm"', p.game_mode)}</div>
         <div class="item"><div class="info"><div class="name">Hardware-accelerated GPU scheduling</div><div class="desc">Can lower input lag. Needs a restart.</div></div>${toggle('id="hags"', p.hags)}</div>
-      </div></div></div>`;
+      </div></div></div>
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card"><h3>Visual effects</h3><p class="sub">${v.weak ? "Your PC is on the lighter side, so " : ""}Turning off window animations and fades makes Windows feel snappier. Fonts stay smooth.</p>
+          ${v.light ? `<span class="badge red">Lighter visuals on</span>` : `<button class="btn" id="vfx">Use lighter visuals</button>`}
+          <div class="item" style="margin-top:8px"><div class="info"><div class="name">Decide automatically</div><div class="desc">Applied once on PCs that need it</div></div>${toggle('data-cfg="visual_auto"', c.visual_auto)}</div></div>
+        <div class="card"><h3>Laptop & Windows Update</h3><div class="list">
+          <div class="item"><div class="info"><div class="name">Battery mode</div><div class="desc">${pw.battery ? (pw.on_battery ? `On battery (${pw.percent}%) — ` : "") : "No battery found — "}balanced power, effects paused, widgets slowed while unplugged</div></div>${toggle('data-cfg="battery_mode"', c.battery_mode)}</div>
+          <div class="item"><div class="info"><div class="name">Updates stay out of the way</div><div class="desc">Restarts only between 02:00 and 08:00, and updates pause while you game</div></div>${toggle('id="wuc"', c.wu_control)}</div>
+        </div></div>
+      </div>`;
     qa<HTMLButtonElement>("[data-plan]", el).forEach((b) => (b.onclick = () => busy(b, async () => { await call("power_set", { guid: b.dataset.plan }); await SPEED.power(el); })));
     const ult = q<HTMLButtonElement>("#ult", el);
     ult.onclick = () => busy(ult, async () => { await call("power_set", { guid: "ultimate" }); snack("Ultimate Performance on"); await SPEED.power(el); });
@@ -620,6 +886,11 @@ const SPEED: Record<string, (el: HTMLElement) => Promise<void>> = {
     gm.onchange = () => call("game_mode_set", { on: gm.checked });
     const hags = q<HTMLInputElement>("#hags", el);
     hags.onchange = () => call("hags_set", { on: hags.checked }).then(() => snack("Restart your PC to apply"));
+    bindCfg(el);
+    const vfx = document.getElementById("vfx") as HTMLButtonElement | null;
+    if (vfx) vfx.onclick = () => busy(vfx, async () => { await call("visuals_light"); snack("Lighter visuals on"); await SPEED.power(el); });
+    const wuc = q<HTMLInputElement>("#wuc", el);
+    wuc.onchange = async () => { await setCfg({ wu_control: wuc.checked }); if (wuc.checked) await call("night_restarts"); snack("Saved"); };
   },
 
   async boot(el) {
@@ -654,16 +925,20 @@ PAGES.autopilot = {
         <div class="card"><div class="row between"><h3>Unused app cleaner</h3>${toggle('data-cfg="unused_cleaner"', c.unused_cleaner)}</div>
           <p class="sub">Fully automatic. Uses Windows' own history of what you run (Prefetch, UserAssist, BAM), so it also knows about apps you stopped using long before Nightmoth was installed. Removes them silently, deletes the folder they leave behind, and gives you 5 seconds to cancel each one. Cancelled apps are never touched again. System apps, drivers, games and security software are protected.</p>
           <div class="row"><span class="muted">Remove after</span><select data-cfg="unused_days" data-num>${[30, 60, 90, 180, 365].map((v) => `<option value="${v}" ${v === c.unused_days ? "selected" : ""}>${v} days unused</option>`).join("")}</select></div></div>
-        <div class="card"><div class="row between"><h3>Scheduled cleanup</h3>${toggle('data-cfg="auto_cleanup"', c.auto_cleanup)}</div>
-          <p class="sub">Clears temp files, update leftovers and caches. Last run: ${ago(c.last_cleanup)}.</p>
-          <div class="row"><span class="muted">Every</span><select data-cfg="cleanup_every_days" data-num>${[1, 3, 7, 14, 30].map((v) => `<option value="${v}" ${v === c.cleanup_every_days ? "selected" : ""}>${v === 1 ? "day" : v + " days"}</option>`).join("")}</select></div></div>
+        <div class="card"><div class="row between"><h3>Cleanup when it's needed</h3>${toggle('data-cfg="auto_cleanup"', c.auto_cleanup)}</div>
+          <p class="sub">No timetable: runs when your drive is getting full or junk has piled up, and does a deep clean while you're away. Last run: ${ago(c.last_cleanup)}.</p>
+          <div class="row between"><span>Deep clean (restore points, old drivers, app leftovers…)</span>${toggle('data-cfg="deep_clean"', c.deep_clean)}</div></div>
+        <div class="card"><div class="row between"><h3>Repair other tools' damage</h3>${toggle('data-cfg="fix_other_tools"', c.fix_other_tools)}</div>
+          <p class="sub">Finds what other optimizers broke (Windows Update, Defender, services, boot "tweaks") and fixes it safely, twice a day. ${c.fixes?.filter((f: Any) => f.action === "fixed").length || 0} repaired so far.</p></div>
+        <div class="card"><div class="row between"><h3>Keep apps updated</h3>${toggle('data-cfg="auto_updates"', c.auto_updates)}</div>
+          <p class="sub">Installs app updates through winget once a day, while you're away and plugged in.</p></div>
         <div class="card"><div class="row between"><h3>Startup guard</h3>${toggle('data-cfg="startup_watcher"', c.startup_watcher)}</div>
           <p class="sub">When a new app adds itself to startup, Nightmoth turns it off and tells you. Click "Allow" on the pop-up to keep it.</p></div>
         <div class="card"><div class="row between"><h3>Background hog watch</h3>${toggle('data-cfg="hog_watcher"', c.hog_watcher)}</div>
-          <p class="sub">Warns when something in the background uses lots of CPU or RAM for 5+ minutes.</p>
+          <p class="sub">When something in the background uses lots of CPU or RAM for 5+ minutes, it goes into Windows 11's Efficiency mode — it keeps working, just without slowing you down.</p>
           <div class="row wrap"><span class="muted">CPU over</span><input type="number" data-cfg="hog_cpu" data-num value="${c.hog_cpu}" style="width:70px">%
             <span class="muted">or RAM over</span><input type="number" data-cfg="hog_ram_mb" data-num value="${c.hog_ram_mb}" style="width:90px">MB</div>
-          <div class="row between" style="margin-top:10px"><span>Slow them down automatically</span>${toggle('data-cfg="hog_auto_lower"', c.hog_auto_lower)}</div></div>
+          <div class="row between" style="margin-top:10px"><span>Put them in Efficiency mode automatically</span>${toggle('data-cfg="hog_auto_lower"', c.hog_auto_lower)}</div></div>
       </div>
 
       <div class="section-title"><h2>Installed apps</h2><div class="row"><input type="text" class="search" id="find" placeholder="Search apps"><label class="row muted"><input type="checkbox" id="onlyunused" style="accent-color:var(--red)"> Only removable</label></div></div>
@@ -730,6 +1005,13 @@ PAGES.games = {
         <p class="sub" style="margin:0">When a game starts: Ultimate Performance power, high priority, notifications paused, chosen apps closed. Everything comes back when you quit.</p></div>
         ${toggle('data-cfg="game_booster"', c.game_booster)}</div></div>
 
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card" id="roblox">${loading("Checking Roblox")}</div>
+        <div class="card"><h3>While you play</h3><p class="sub">Windows Update downloads are throttled and its services paused; restarts only happen at night.</p>
+          <div class="row between"><span>Pause updates while gaming</span>${toggle('data-cfg="wu_control"', c.wu_control)}</div>
+          <div class="row" style="margin-top:12px;gap:22px"><div class="stat"><div class="label">Ping</div><div class="value" id="gping">–</div></div><span class="muted" style="font-size:12px">to Cloudflare, updated every few seconds</span></div></div>
+      </div>
+
       <div class="section-title"><h2>Your games</h2><span class="muted">Found automatically</span></div>
       <div class="card"><div class="list">${games.length ? games.map((g) => `
         <div class="item"><div class="info"><div class="name">${esc(g.name)} ${g.running ? `<span class="badge red">Boosting now</span>` : ""}</div>
@@ -741,6 +1023,29 @@ PAGES.games = {
         <div class="row wrap" id="closelist"></div><div id="picker"></div></div>`;
     bindCfg(el);
     qa<HTMLInputElement>("[data-g]", el).forEach((t) => (t.onchange = () => call("game_boost_set", { exe: t.dataset.g, on: t.checked })));
+
+    const drawRoblox = async () => {
+      const box = q("#roblox");
+      if (!box) return;
+      const r = await raw<Any>("roblox_state").catch(() => null);
+      if (!r || !r.installed) { box.innerHTML = `<h3>Roblox best settings</h3><p class="sub">Install Roblox and Nightmoth tunes it for your PC automatically.</p>`; return; }
+      box.innerHTML = `<div class="row between"><h3>Roblox best settings</h3>${toggle('id="rbon"', c.roblox_tune)}</div>
+        <p class="sub">Graphics picked for your hardware${r.tier ? ` (${esc(r.tier)}-end PC)` : ""} and the frame cap raised to your ${r.refresh} Hz screen. Re-applied after every Roblox update. Only settings Roblox allows — nothing injected.</p>
+        <div class="row">${r.tuned ? `<span class="badge red">Tuned · ${r.fps} FPS cap</span>` : ""}<button class="btn small" id="rbgo">${r.tuned ? "Tune again" : "Tune now"}</button>${r.tuned ? `<button class="btn small ghost" id="rbundo">Put back original</button>` : ""}</div>`;
+      q<HTMLInputElement>("#rbon").onchange = (e) => setCfg({ roblox_tune: (e.target as HTMLInputElement).checked });
+      const go2 = q<HTMLButtonElement>("#rbgo");
+      go2.onclick = () => busy(go2, async () => { const x = await call<Any>("roblox_apply"); snack(`Roblox: ${x.fps} FPS cap, graphics ${x.quality}/10`); await drawRoblox(); });
+      const un = document.getElementById("rbundo") as HTMLButtonElement | null;
+      if (un) un.onclick = () => busy(un, async () => { await call("roblox_restore"); snack("Original Roblox settings back"); await drawRoblox(); });
+    };
+    drawRoblox();
+    const gp = async () => {
+      const ms = await raw<number | null>("net_ping", { ip: "1.1.1.1" }).catch(() => null);
+      const e2 = document.getElementById("gping");
+      if (e2) e2.innerHTML = ms == null ? "<small>–</small>" : `${ms}<small> ms</small>`;
+    };
+    gp();
+    timers.push(window.setInterval(gp, 3000));
 
     let list: string[] = c.boost_close || [];
     const drawList = () => {

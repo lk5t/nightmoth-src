@@ -423,7 +423,8 @@ fn run_app() {
             userjob::start_app_worker();
             widgets::start(app.handle().clone());
             tidy::start_auto();
-            taskbar::start();
+            let helper = app.path().resolve("nightmoth_tap.dll", tauri::path::BaseDirectory::Resource).ok();
+            taskbar::start(helper);
             roblox::start_auto();
             let handle = app.handle().clone();
             std::thread::spawn(move || {

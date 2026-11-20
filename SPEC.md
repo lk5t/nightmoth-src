@@ -175,6 +175,22 @@ Master toggle: **Autopilot ON/OFF**. Each module has its own toggle and schedule
 
 ---
 
+### 3.8 Added in 0.4
+
+**Autopilot runs when it's needed, not on a timetable** (`upkeep.rs`): cleanup when the system drive is under 10 % / 15 GB free or junk passes 1.5 GB; heavier work (deep clean, app updates, DNS re-test, daily snapshot) only while the user has been away 10+ minutes, not gaming, and plugged in or above 60 % battery.
+
+**Repair other tools' damage** (`fixer.rs`, automatic, undoable): disabled core services (Windows Update, BITS, Defender UI, Store, Search, audio…), policies that switch off updates/Defender/SmartScreen, UAC off, Spectre/Meltdown mitigations off, power throttling off, page file removed, `bcdedit` timer "tweaks", TCP auto-tuning off, update/Store/activation servers blocked in `hosts`, Defender exclusions covering whole drives. Good leftovers (telemetry blocked, Start ads off) are kept and listed. Restore point first.
+
+**Deep clean** (`deepclean.rs`, deleted straight away): old restore points (newest kept), DISM component cleanup, old driver versions (`pnputil` without `/force`, so drivers in use stay), folders/settings/registry keys of apps that were uninstalled (only exact name matches, not touched for 7 days, never shared vendors), C:\NVIDIA / C:\AMD / old driver downloads, Windows.old after 10 days, old servicing logs and MEMORY.DMP, Discord/Steam/Epic web caches while closed, installers in Downloads older than 60 days.
+
+**Speed extras**: winget updates; delayed startup (app starts listed apps 60 s after login); Efficiency mode (EcoQoS + idle priority) for background hogs; lighter visual effects on PCs under 8 GB / ≤ 4 threads; battery mode (Balanced plan, taskbar effect paused, widgets slowed); Windows Update active hours 08:00–02:00 and Delivery Optimization throttled + update services stopped while gaming; Roblox graphics level from GPU tier and FPS cap = refresh rate (only allow-listed settings, originals backed up, re-applied after Roblox updates).
+
+**Network & storage**: DNS benchmark over 12 common domains against Cloudflare/Google/Quad9/OpenDNS/AdGuard and the current server, switch with exact undo; ICMP ping; storage finder for files ≥ 500 MB, same-content duplicates ≥ 20 MB, Downloads untouched for 90 days (Recycle Bin).
+
+**Progress page**: daily idle snapshot (score, boot time, startup apps, idle RAM/CPU, junk, free space, app count); first vs latest; score history; this week vs last.
+
+**Customization**: widgets for now playing (with controls), weather (open-meteo, city chosen by the user), notes, app dock; Windows Terminal scheme + VS Code accent colours; accent mouse pointer (generated .cur); accent folder icon (Shell Icons 3/4); look export/import (`.nightmoth` file with the wallpaper inside); per-screen wallpapers (IDesktopWallpaper, main screen drives the theme); fully invisible taskbar on Windows 11 via the XAML Diagnostics helper (`tap/`), which fades out the `BackgroundFill`/`BackgroundStroke` layers, follows `HKCU\Software\Nightmoth\TaskbarClear`, and is disabled automatically after two Explorer restarts right after loading.
+
 ## 4. Toasts (Razer Cortex style)
 - Bottom-right of primary monitor, above the taskbar: 392×112 logical px window (card inset 10 px), sized from the primary monitor's scale factor so it is never cut off
 - Black card `#0A0A0B`, red left edge + red countdown bar, moth icon, title + one line
