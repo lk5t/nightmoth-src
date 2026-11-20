@@ -23,6 +23,8 @@ static QUEUE: Mutex<VecDeque<Toast>> = Mutex::new(VecDeque::new());
 static WAKE: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static DONE: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static SHOWN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Set once the pop-up window's page has loaded and is listening.
+pub static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Block until a toast is on screen (or the timeout passes). Used by cancel windows.
 pub fn wait_shown(id: &str, timeout: Duration) -> bool {
@@ -120,6 +122,13 @@ fn worker(wake: Receiver<()>, done: Receiver<()>) {
             let _ = wake.recv();
             continue;
         };
+        // wait (up to 15 s) for the pop-up window to exist and load
+        for _ in 0..150 {
+            if READY.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         // drain stale done signals
         while done.try_recv().is_ok() {}
         if let Some(a) = app() {

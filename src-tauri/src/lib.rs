@@ -17,7 +17,8 @@ mod win;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager};
+use std::time::Instant;
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub fn fmt_bytes(b: u64) -> String {
     let b = b as f64;
@@ -30,6 +31,40 @@ pub fn fmt_bytes(b: u64) -> String {
     } else {
         format!("{} B", b as u64)
     }
+}
+
+/// Windows are created here (not in tauri.conf.json) so startup is logged step by step
+/// and the main window appears before anything else is set up.
+fn create_main(app: &tauri::App) -> tauri::Result<()> {
+    let t = Instant::now();
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("Nightmoth")
+        .inner_size(1180.0, 760.0)
+        .min_inner_size(980.0, 640.0)
+        .decorations(false)
+        .center()
+        .visible(false)
+        .build()?;
+    log::log(&format!("main window created in {} ms", t.elapsed().as_millis()));
+    Ok(())
+}
+
+fn create_toast(app: &AppHandle) -> tauri::Result<()> {
+    let t = Instant::now();
+    WebviewWindowBuilder::new(app, "toast", WebviewUrl::App("toast.html".into()))
+        .title("Nightmoth")
+        .inner_size(380.0, 104.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .shadow(false)
+        .visible(false)
+        .build()?;
+    log::log(&format!("toast window created in {} ms", t.elapsed().as_millis()));
+    Ok(())
 }
 
 pub fn show_main(app: &AppHandle) {
@@ -114,10 +149,18 @@ pub fn run() {
     log::log(&format!("starting Nightmoth {} args={:?}", env!("CARGO_PKG_VERSION"), std::env::args().collect::<Vec<_>>()));
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log::log("second launch: showing the existing window");
             show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            log::log("setup: main window");
+            create_main(app)?;
+            let tray_only = std::env::args().any(|a| a == "--tray");
+            let first = !crate::config::Config::load().first_run_done;
+            if !tray_only || first {
+                show_main(app.handle());
+            }
             log::log("setup: state");
             state::init(app.handle().clone());
             log::log("setup: toasts");
@@ -128,7 +171,6 @@ pub fn run() {
                 log::log(&format!("tray failed: {e}"));
             }
 
-            let first = !state::cfg().first_run_done;
             if first {
                 std::thread::spawn(|| {
                     if state::cfg().autostart {
@@ -137,11 +179,14 @@ pub fn run() {
                     state::with_cfg(|c| c.first_run_done = true);
                 });
             }
-            let tray_only = std::env::args().any(|a| a == "--tray");
-            if !tray_only || first {
-                log::log("setup: show main window");
-                show_main(app.handle());
-            }
+            // the pop-up window is created a moment later so it never delays the main window
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                if let Err(e) = create_toast(&handle) {
+                    log::log(&format!("toast window failed: {e}"));
+                }
+            });
             log::log("setup: autopilot");
             autopilot::run();
             log::log("setup: done");

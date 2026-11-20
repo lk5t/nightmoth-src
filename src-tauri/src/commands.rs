@@ -435,5 +435,8 @@ pub fn quit_app(app: tauri::AppHandle) {
 /// Lets the UI write to the log (startup + JS errors).
 #[tauri::command]
 pub fn ui_log(msg: String) {
+    if msg == "toast window ready" {
+        toast::READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     crate::log::log(&format!("ui: {msg}"));
 }
