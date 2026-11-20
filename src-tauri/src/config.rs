@@ -59,6 +59,43 @@ pub struct BoostSession {
     pub prev_plan: String,
     pub prev_toasts: Option<u32>,
     pub closed: Vec<String>,
+    /// Delivery Optimization bandwidth policy values before the boost
+    pub prev_do: Vec<(String, Option<u32>)>,
+}
+
+/// A startup app Nightmoth starts 60 s after login instead of at login.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct DelayedApp {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+}
+
+/// One day's measurements for the Progress page.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Snapshot {
+    pub t: i64,
+    pub boot_ms: i64,
+    pub idle_cpu: f32,
+    pub idle_ram_mb: u64,
+    pub startup_apps: u32,
+    pub disk_free: u64,
+    pub junk_bytes: u64,
+    pub apps: u32,
+    pub score: u32,
+}
+
+/// A problem left behind by another optimizer tool, and what Nightmoth did about it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct FixRecord {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub t: i64,
+    pub action: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -124,6 +161,47 @@ pub struct Config {
     pub tidy_auto: bool,
     pub tidy_last: i64,
 
+    // widgets (extra)
+    pub notes: String,
+    pub weather_city: String,
+    pub weather_lat: f64,
+    pub weather_lon: f64,
+    /// exe / shortcut paths for the dock widget
+    pub dock: Vec<String>,
+
+    // more looks
+    pub theme_apps: bool,
+    pub accent_cursor: bool,
+    pub accent_folders: bool,
+    /// monitor device path -> wallpaper (empty = same everywhere)
+    pub monitor_walls: HashMap<String, String>,
+    pub taskbar_helper: bool,
+    pub taskbar_helper_crashes: u32,
+
+    // run-when-needed upkeep
+    pub last_deep_clean: i64,
+    pub last_junk_check: i64,
+    pub last_fixer: i64,
+    pub last_update_check: i64,
+    pub last_snapshot: i64,
+    pub auto_updates: bool,
+    pub deep_clean: bool,
+    pub fix_other_tools: bool,
+    pub fixes: Vec<FixRecord>,
+    pub battery_mode: bool,
+    pub battery_prev_plan: String,
+    pub wu_control: bool,
+    pub visual_auto: bool,
+    pub visual_done: bool,
+    pub delayed: Vec<DelayedApp>,
+    pub roblox_tune: bool,
+    pub history: Vec<Snapshot>,
+    pub dns_auto: bool,
+    pub dns_last: i64,
+    /// every app Nightmoth has seen installed (name|publisher), to spot leftovers after uninstalls
+    pub seen_apps: Vec<String>,
+    pub last_deep_report: Vec<(String, u64)>,
+
     // lists
     pub keep_list: Vec<String>,
     pub startup_allow: Vec<String>,
@@ -181,6 +259,38 @@ impl Default for Config {
             taskbar_migrated: false,
             tidy_auto: true,
             tidy_last: 0,
+            notes: String::new(),
+            weather_city: String::new(),
+            weather_lat: 0.0,
+            weather_lon: 0.0,
+            dock: vec![],
+            theme_apps: true,
+            accent_cursor: false,
+            accent_folders: false,
+            monitor_walls: HashMap::new(),
+            taskbar_helper: true,
+            taskbar_helper_crashes: 0,
+            last_deep_clean: 0,
+            last_junk_check: 0,
+            last_fixer: 0,
+            last_update_check: 0,
+            last_snapshot: 0,
+            auto_updates: true,
+            deep_clean: true,
+            fix_other_tools: true,
+            fixes: vec![],
+            battery_mode: true,
+            battery_prev_plan: String::new(),
+            wu_control: true,
+            visual_auto: true,
+            visual_done: false,
+            delayed: vec![],
+            roblox_tune: true,
+            history: vec![],
+            dns_auto: false,
+            dns_last: 0,
+            seen_apps: vec![],
+            last_deep_report: vec![],
             keep_list: vec![],
             startup_allow: vec![],
             known_startup: vec![],

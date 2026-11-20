@@ -164,6 +164,35 @@ pub fn processes() -> Vec<Proc> {
 }
 
 const NOTIF: &str = r"Software\Microsoft\Windows\CurrentVersion\PushNotifications";
+const DO_POLICY: &str = r"SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization";
+/// While gaming, Windows Update may only use a sliver of the connection.
+const DO_LIMITS: &[(&str, u32)] = &[("DOPercentageMaxForegroundBandwidth", 10), ("DOPercentageMaxBackgroundBandwidth", 5)];
+
+/// Throttle update downloads and stop (not disable) the update services for the game.
+fn pause_updates() -> Vec<(String, Option<u32>)> {
+    let mut prev = vec![];
+    for (name, v) in DO_LIMITS {
+        prev.push((name.to_string(), win::reg_dword(Hive::HKLM, DO_POLICY, name)));
+        let _ = win::reg_set(Hive::HKLM, DO_POLICY, name, &RegVal::Dword(*v));
+    }
+    for svc in ["UsoSvc", "wuauserv"] {
+        let _ = win::run("sc.exe", &["stop", svc]);
+    }
+    prev
+}
+
+fn resume_updates(prev: &[(String, Option<u32>)]) {
+    for (name, v) in prev {
+        match v {
+            Some(v) => {
+                let _ = win::reg_set(Hive::HKLM, DO_POLICY, name, &RegVal::Dword(*v));
+            }
+            None => {
+                let _ = win::reg_delete(Hive::HKLM, DO_POLICY, name);
+            }
+        }
+    }
+}
 
 fn start_boost(name: &str, exe: &str, path: &str, pid: u32) {
     core().boosting.store(true, Ordering::Relaxed);
@@ -195,6 +224,7 @@ fn start_boost(name: &str, exe: &str, path: &str, pid: u32) {
         }
     }
 
+    let prev_do = if c.wu_control { pause_updates() } else { vec![] };
     let session = BoostSession {
         game: name.into(),
         exe: exe.into(),
@@ -203,6 +233,7 @@ fn start_boost(name: &str, exe: &str, path: &str, pid: u32) {
         prev_plan,
         prev_toasts,
         closed: closed.clone(),
+        prev_do,
     };
     with_cfg(|cf| {
         let g = cf.games.entry(exe.to_string()).or_insert_with(|| GameCfg { name: name.into(), exe_path: path.into(), boost: true, ..Default::default() });
@@ -213,7 +244,7 @@ fn start_boost(name: &str, exe: &str, path: &str, pid: u32) {
         cf.pending_boost = Some(session);
     });
     let extra = if closed.is_empty() { String::new() } else { format!(" · {} apps closed", closed.len()) };
-    toast::show("game", &format!("{name} boosted"), &format!("Max power · high priority · notifications paused{extra}"));
+    toast::show("game", &format!("{name} boosted"), &format!("Max power · high priority · updates paused{extra}"));
 }
 
 /// Undo a boost (also used at startup if the app crashed mid-boost).
@@ -225,6 +256,7 @@ pub fn end_boost(announce: bool) {
     if !s.prev_plan.is_empty() {
         let _ = crate::speed::set_active_plan(&s.prev_plan);
     }
+    resume_updates(&s.prev_do);
     match s.prev_toasts {
         Some(v) => {
             let _ = win::reg_set(Hive::HKCU, NOTIF, "ToastEnabled", &RegVal::Dword(v));

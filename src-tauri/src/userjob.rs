@@ -91,3 +91,28 @@ pub fn start_app_worker() {
         }
     });
 }
+
+/// At login: start the apps the user chose to delay, 60 s after the desktop appears.
+pub fn start_delayed_apps() {
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_secs(60));
+        let Ok(c) = crate::ipc::call_quiet("get_config", json!({})) else { return };
+        let Some(list) = c["delayed"].as_array() else { return };
+        for d in list {
+            let Some(cmd) = d["command"].as_str() else { continue };
+            let cmd = cmd.trim();
+            if cmd.is_empty() {
+                continue;
+            }
+            // a bare path with spaces (startup-folder shortcut) needs quotes
+            let line = if !cmd.starts_with('"') && std::path::Path::new(cmd).exists() { format!("\"{cmd}\"") } else { cmd.to_string() };
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("cmd.exe")
+                .raw_arg(format!("/C start \"\" {line}"))
+                .creation_flags(crate::win::CREATE_NO_WINDOW)
+                .spawn();
+            crate::log::log(&format!("app: started delayed app {}", d["name"].as_str().unwrap_or("?")));
+            std::thread::sleep(Duration::from_secs(4));
+        }
+    });
+}

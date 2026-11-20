@@ -429,6 +429,9 @@ pub fn apply(path: &str, announce: bool) -> Result<Applied, String> {
             changes.extend(lock_screen_changes(&wall));
         }
     }
+    if c.accent_folders {
+        let _ = set_folder_icon(accent_rgb, "Look");
+    }
     win::broadcast("ImmersiveColorSet");
     win::broadcast("WindowsThemeElement");
 
@@ -511,6 +514,16 @@ pub struct WidgetsState {
     pub week: crate::config::Stats,
     pub taskbar: String,
     pub taskbar_accent: String,
+    pub battery: bool,
+    pub notes: String,
+    pub dock: Vec<String>,
+    pub weather_city: String,
+    pub weather_lat: f64,
+    pub weather_lon: f64,
+    pub theme_apps: bool,
+    pub accent_cursor: bool,
+    pub monitor_walls: std::collections::HashMap<String, String>,
+    pub wallpaper: String,
 }
 
 /// What the desktop widgets should look like and where they go.
@@ -552,6 +565,16 @@ pub fn widgets_state() -> WidgetsState {
         week: c.stats.clone(),
         taskbar: c.taskbar_style.clone(),
         taskbar_accent: look_accent,
+        battery: crate::upkeep::on_battery(),
+        notes: c.notes.clone(),
+        dock: c.dock.clone(),
+        weather_city: c.weather_city.clone(),
+        weather_lat: c.weather_lat,
+        weather_lon: c.weather_lon,
+        theme_apps: c.theme_apps,
+        accent_cursor: c.accent_cursor,
+        monitor_walls: c.monitor_walls.clone(),
+        wallpaper: wall.clone(),
     }
 }
 
@@ -734,4 +757,159 @@ pub fn slideshow_next() {
         cf.slideshow_index = idx;
         cf.slideshow_last = win::now();
     });
+}
+
+// ------------------------------------------------------------------ accent folder icons
+
+const SHELL_ICONS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Icons";
+
+fn folder_png(c: Rgb, size: u32) -> Vec<u8> {
+    let (h, s, l) = rgb_to_hsl(c);
+    let front = hsl_to_rgb(h, s.min(0.85), l.clamp(0.42, 0.60));
+    let back = hsl_to_rgb(h, s.min(0.85), (l * 0.62).clamp(0.22, 0.40));
+    let to8 = |c: Rgb, k: f32| [(c[0] * k * 255.0).min(255.0) as u8, (c[1] * k * 255.0).min(255.0) as u8, (c[2] * k * 255.0).min(255.0) as u8];
+    let n = size as f32;
+    let mut img = image::RgbaImage::new(size, size);
+    // rounded rectangle test with 4x4 supersampling
+    let rr = |x: f32, y: f32, x0: f32, y0: f32, x1: f32, y1: f32, r: f32| -> bool {
+        if x < x0 || x > x1 || y < y0 || y > y1 {
+            return false;
+        }
+        let cx = x.clamp(x0 + r, x1 - r);
+        let cy = y.clamp(y0 + r, y1 - r);
+        (x - cx).powi(2) + (y - cy).powi(2) <= r * r
+    };
+    for py in 0..size {
+        for px in 0..size {
+            let (mut fb, mut ff) = (0u32, 0u32);
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let x = (px as f32 + (sx as f32 + 0.5) / 4.0) / n;
+                    let y = (py as f32 + (sy as f32 + 0.5) / 4.0) / n;
+                    if rr(x, y, 0.08, 0.30, 0.92, 0.86, 0.06) {
+                        ff += 1;
+                    } else if rr(x, y, 0.08, 0.16, 0.92, 0.80, 0.06) || rr(x, y, 0.08, 0.12, 0.46, 0.30, 0.05) {
+                        fb += 1;
+                    }
+                }
+            }
+            if ff + fb == 0 {
+                continue;
+            }
+            let y = py as f32 / n;
+            // a soft top-to-bottom light on the front
+            let col = if ff >= fb { to8(front, 1.12 - (y - 0.3) * 0.35) } else { to8(back, 1.0) };
+            img.put_pixel(px, py, image::Rgba([col[0], col[1], col[2], ((ff + fb) * 255 / 16) as u8]));
+        }
+    }
+    let mut png = vec![];
+    let _ = DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png);
+    png
+}
+
+/// Make the closed-folder icon your accent colour (Explorer shows it for folders
+/// without a picture preview). Undo puts the Windows folder back.
+pub fn set_folder_icon(accent: Rgb, module: &str) -> Result<(), String> {
+    use image::codecs::ico::{IcoEncoder, IcoFrame};
+    let frames: Vec<IcoFrame> = [256u32, 48, 32, 16]
+        .iter()
+        .filter_map(|s| IcoFrame::with_encoded(folder_png(accent, *s), *s, *s, image::ExtendedColorType::Rgba8).ok())
+        .collect();
+    let path = data_dir().join("icons").join(format!("folder-{}.ico", to_hex(accent).trim_start_matches('#').to_lowercase()));
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+    let f = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    IcoEncoder::new(f).encode_images(&frames).map_err(|e| e.to_string())?;
+    let v = RegVal::Str(format!("{},0", path.to_string_lossy()));
+    let mut ch = vec![];
+    ch.extend(changelog::reg(Hive::HKLM, SHELL_ICONS, "3", v.clone())?);
+    ch.extend(changelog::reg(Hive::HKLM, SHELL_ICONS, "4", v)?);
+    let _ = win::run("ie4uinit.exe", &["-show"]);
+    changelog::record_many(module, "Folder icons in your accent colour", &to_hex(accent), ch);
+    Ok(())
+}
+
+pub fn reset_folder_icon() {
+    let _ = win::reg_delete(Hive::HKLM, SHELL_ICONS, "3");
+    let _ = win::reg_delete(Hive::HKLM, SHELL_ICONS, "4");
+    let _ = win::run("ie4uinit.exe", &["-show"]);
+}
+
+// ------------------------------------------------------------------ share looks
+
+/// Everything about the current look in one shareable file (the wallpaper is inside).
+pub fn export() -> Result<serde_json::Value, String> {
+    let c = cfg();
+    let wall = if c.current_wallpaper.is_empty() { win::current_wallpaper() } else { c.current_wallpaper.clone() };
+    let img = image::open(&wall).map_err(|e| format!("Can't read the wallpaper: {e}"))?;
+    let img = if img.width() > 3840 { img.resize(3840, 3840, image::imageops::FilterType::Lanczos3) } else { img };
+    let mut buf = vec![];
+    DynamicImage::ImageRgb8(img.to_rgb8()).write_with_encoder(JpegEncoder::new_with_quality(&mut buf, 90)).map_err(|e| e.to_string())?;
+    let d = desktop_state();
+    let name = Path::new(&wall).file_stem().and_then(|s| s.to_str()).unwrap_or("Look").to_string();
+    Ok(serde_json::json!({
+        "nightmoth_look": 1,
+        "name": name,
+        "wallpaper": base64::engine::general_purpose::STANDARD.encode(buf),
+        "lock_accent": c.lock_accent,
+        "accent_index": c.looks.get(&wall).and_then(|l| l.accent_index),
+        "taskbar": c.taskbar_style,
+        "icons": d.icons,
+        "center": d.center,
+        "widgets_on": c.widgets_on,
+        "widgets": c.widgets,
+        "widget_spot": c.widget_spot,
+        "widget_style": c.widget_style,
+        "widget_accent": c.widget_accent,
+        "widget_scale": c.widget_scale,
+    }))
+}
+
+/// Apply a look someone shared.
+pub fn import(v: &serde_json::Value) -> Result<String, String> {
+    if v["nightmoth_look"].as_u64() != Some(1) {
+        return Err("That isn't a Nightmoth look file".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(v["wallpaper"].as_str().unwrap_or("")).map_err(|_| "The wallpaper in that file is damaged")?;
+    let img = image::load_from_memory(&bytes).map_err(|_| "The wallpaper in that file is damaged")?;
+    let name: String = v["name"].as_str().unwrap_or("Shared look").chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').take(60).collect();
+    let name = if name.trim().is_empty() { "Shared look".to_string() } else { name };
+    let path = data_dir().join("looks").join(format!("{name}.jpg"));
+    save_jpeg(&img, &path, 94)?;
+    let path = path.to_string_lossy().to_string();
+    with_cfg(|c| {
+        c.lock_accent = v["lock_accent"].as_str().map(String::from);
+        if let Some(i) = v["accent_index"].as_u64() {
+            c.looks.entry(path.clone()).or_insert_with(Look::default).accent_index = Some(i as usize);
+        }
+        if let Some(s) = v["taskbar"].as_str() {
+            c.taskbar_style = s.into();
+        }
+        if let Some(b) = v["widgets_on"].as_bool() {
+            c.widgets_on = b;
+        }
+        if let Some(a) = v["widgets"].as_array() {
+            c.widgets = a.iter().filter_map(|x| x.as_str().map(String::from)).collect();
+        }
+        if let Some(s) = v["widget_spot"].as_str() {
+            c.widget_spot = s.into();
+        }
+        if let Some(s) = v["widget_style"].as_str() {
+            c.widget_style = s.into();
+        }
+        if let Some(b) = v["widget_accent"].as_bool() {
+            c.widget_accent = b;
+        }
+        if let Some(f) = v["widget_scale"].as_f64() {
+            c.widget_scale = f as f32;
+        }
+    });
+    apply(&path, false)?;
+    if let Some(b) = v["icons"].as_bool() {
+        let _ = desktop_set("icons", &serde_json::json!(b));
+    }
+    if let Some(b) = v["center"].as_bool() {
+        let _ = desktop_set("center", &serde_json::json!(b));
+    }
+    toast::show("theme", &format!("Look \"{name}\" applied"), "Wallpaper, colours, taskbar and widgets");
+    Ok(name)
 }

@@ -129,6 +129,38 @@ impl Sampler {
     }
 }
 
+/// The accent or wallpaper changed: theme Terminal/VS Code, recolour the pointer,
+/// and put the other screens' own wallpapers back.
+fn on_look_change(st: &Value, last_accent: &mut String, last_wall: &mut String) {
+    let accent = st["taskbar_accent"].as_str().unwrap_or("").to_string();
+    if !accent.is_empty() && accent != *last_accent {
+        let first = last_accent.is_empty();
+        *last_accent = accent.clone();
+        let (theme, cursor) = (st["theme_apps"].as_bool().unwrap_or(false), st["accent_cursor"].as_bool().unwrap_or(false));
+        std::thread::spawn(move || {
+            if theme {
+                let n = crate::apptheme::theme_apps(&accent);
+                if n > 0 && !first {
+                    log(&format!("themed {n} apps"));
+                }
+            }
+            if cursor {
+                let _ = crate::apptheme::set_cursor(&accent);
+            }
+        });
+    }
+    let wall = st["wallpaper"].as_str().unwrap_or("").to_string();
+    if wall != *last_wall {
+        *last_wall = wall;
+        if let Some(m) = st["monitor_walls"].as_object() {
+            if !m.is_empty() {
+                let m = m.clone();
+                std::thread::spawn(move || crate::monitors::reapply(&m));
+            }
+        }
+    }
+}
+
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(2));
@@ -136,6 +168,9 @@ pub fn start(app: AppHandle) {
         let mut state: Option<Value> = None;
         let mut sent: Option<Value> = None;
         let mut last_place = (0, 0, 0, 0);
+        let mut last_accent = String::new();
+        let mut last_wall = String::new();
+        let mut clickable = false;
         let mut tick: u64 = 0;
         loop {
             std::thread::sleep(Duration::from_millis(1000));
@@ -146,7 +181,11 @@ pub fn start(app: AppHandle) {
                 }
             }
             let Some(st) = state.clone() else { continue };
-            crate::taskbar::set_wanted(st["taskbar"].as_str().unwrap_or("normal"), st["taskbar_accent"].as_str().unwrap_or("#B3141C"));
+            on_look_change(&st, &mut last_accent, &mut last_wall);
+            // on battery the taskbar effect pauses (it redraws constantly) and stats update less often
+            let battery = st["battery"].as_bool().unwrap_or(false);
+            let style = if battery { "normal" } else { st["taskbar"].as_str().unwrap_or("normal") };
+            crate::taskbar::set_wanted(style, st["taskbar_accent"].as_str().unwrap_or("#B3141C"));
             let wanted = st["on"].as_bool().unwrap_or(false)
                 && !st["boosting"].as_bool().unwrap_or(false)
                 && st["widgets"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
@@ -179,8 +218,17 @@ pub fn start(app: AppHandle) {
                 let _ = app.emit_to("widgets", "widgets-state", &st);
                 sent = Some(st.clone());
             }
-            if tick % 2 == 0 {
+            if tick % if battery { 6 } else { 2 } == 0 {
                 let _ = app.emit_to("widgets", "widgets-stats", sampler.sample());
+            }
+            // media controls and the dock need clicks; everything else lets clicks through
+            let wants_clicks = st["widgets"].as_array().map(|a| a.iter().any(|x| x == "media" || x == "dock")).unwrap_or(false);
+            if wants_clicks != clickable {
+                let _ = w.set_ignore_cursor_events(!wants_clicks);
+                clickable = wants_clicks;
+            }
+            if tick % 2 == 0 && st["widgets"].as_array().map(|a| a.iter().any(|x| x == "media")).unwrap_or(false) {
+                let _ = app.emit_to("widgets", "widgets-media", crate::media::now_playing());
             }
             place(&w, st["cell"].as_u64().unwrap_or(2) as usize, &mut last_place);
             // "Show desktop" (Win+D) can minimise it: bring it back without taking focus

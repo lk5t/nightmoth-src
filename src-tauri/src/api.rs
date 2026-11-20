@@ -159,6 +159,21 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
         "preset_apply" => ok(look::preset(&arg::<String>(a, "id")?)?),
         "gallery_list" => ok(gallery::list()?),
         "widgets_state" => ok(look::widgets_state()),
+        "look_export" => ok(look::export()?),
+        "look_import" => ok(look::import(a.get("data").unwrap_or(&Value::Null))?),
+        "folders_set" => {
+            let on: bool = arg(a, "on")?;
+            with_cfg(|c| c.accent_folders = on);
+            if on {
+                let c = cfg();
+                let wall = current_wall(&c);
+                let hex = c.looks.get(&wall).map(|l| l.accent.clone()).unwrap_or_else(|| "#A3121A".into());
+                look::set_folder_icon(look::from_hex(&hex).unwrap_or([0.64, 0.07, 0.1]), "Look")?;
+            } else {
+                look::reset_folder_icon();
+            }
+            ok(true)
+        }
         "slideshow_set" => {
             let on: bool = arg(a, "on")?;
             let folder: String = arg(a, "folder")?;
@@ -196,6 +211,10 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
                     c.known_startup.push(id.clone());
                 }
             });
+            ok(true)
+        }
+        "startup_delay" => {
+            speed::startup_delay(&arg::<String>(a, "id")?, arg(a, "on")?)?;
             ok(true)
         }
         "cleanup_scan" => ok(speed::cleanup_scan()),
@@ -307,6 +326,62 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
             toast::action(&arg::<String>(a, "id")?);
             ok(true)
         }
+        // ---------------------------------------------------------- 0.4: repair, deep clean, updates, network, progress
+        "fixer_scan" => {
+            let c = cfg();
+            ok(json!({ "found": crate::fixer::scan(), "history": c.fixes }))
+        }
+        "fixer_fix" => {
+            let (fixed, restart, errs) = crate::fixer::fix_all("Repair");
+            if !fixed.is_empty() {
+                toast::show("fixer", &format!("Repaired {} things", fixed.len()), if restart { "Restart your PC to finish" } else { "Everything can be undone from Safety" });
+            }
+            ok(json!({ "fixed": fixed.len(), "restart": restart, "errors": errs }))
+        }
+        "deep_scan" => ok(json!({ "items": crate::deepclean::scan(), "last": cfg().last_deep_clean, "report": cfg().last_deep_report })),
+        "deep_run" => {
+            let ids: Vec<String> = arg(a, "ids")?;
+            let report = crate::deepclean::run(&ids);
+            let total: u64 = report.iter().map(|r| r.1).sum();
+            toast::show("cleanup", "Deep clean done", &format!("Freed {}", crate::fmt_bytes(total)));
+            ok(json!({ "report": report, "total": total }))
+        }
+        "updates_list" => ok(crate::updates::available()),
+        "updates_run" => {
+            let id: Option<String> = arg(a, "id").unwrap_or(None);
+            crate::updates::upgrade(id.as_deref())?;
+            toast::show("updates", "Updated", id.as_deref().unwrap_or("All apps"));
+            ok(true)
+        }
+        "dns_bench" => ok(crate::net::benchmark()),
+        "dns_set" => {
+            crate::net::set_dns(&arg::<String>(a, "name")?, &arg::<String>(a, "primary")?, &arg::<String>(a, "secondary").unwrap_or_default(), "Network")?;
+            toast::show("network", "DNS switched", &arg::<String>(a, "name")?);
+            ok(true)
+        }
+        "net_ping" => {
+            let host: String = arg(a, "ip").unwrap_or_else(|_| "1.1.1.1".into());
+            ok(crate::net::ping(&host))
+        }
+        "progress" => ok(crate::history::progress()),
+        "snapshot_now" => {
+            crate::history::snapshot();
+            ok(crate::history::progress())
+        }
+        "visuals_state" => ok(json!({ "weak": crate::upkeep::weak_pc(), "light": crate::upkeep::visuals_light() })),
+        "visuals_light" => {
+            crate::upkeep::lighter_visuals("Speed")?;
+            ok(true)
+        }
+        "night_restarts" => {
+            crate::upkeep::night_restarts("Speed")?;
+            ok(true)
+        }
+        "power_info" => {
+            let (has, on, pct) = win::power_source();
+            ok(json!({ "battery": has, "on_battery": on, "percent": pct }))
+        }
+
         // ---------------------------------------------------------- normal-user jobs
         "user_jobs_take" => ok(crate::userjob::take()),
         "user_job_done" => {

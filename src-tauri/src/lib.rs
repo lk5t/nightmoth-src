@@ -7,19 +7,30 @@
 
 mod api;
 mod apps;
+mod apptheme;
 mod autopilot;
 mod changelog;
 mod config;
+mod deepclean;
+mod fixer;
 mod gallery;
 mod games;
+mod history;
 mod ipc;
 mod log;
+mod monitors;
 mod look;
+mod media;
+mod net;
+mod roblox;
 mod speed;
 mod state;
+mod storage;
 mod stats;
 mod toast;
 mod ui_toast;
+mod updates;
+mod upkeep;
 mod taskbar;
 mod tidy;
 mod userjob;
@@ -249,6 +260,120 @@ fn tidy_undo() -> Result<usize, String> {
     Ok(n)
 }
 
+// ---- 0.4 app-side tools (run with your own rights)
+
+#[tauri::command]
+async fn storage_scan() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| serde_json::to_value(storage::scan()).map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn storage_recycle(paths: Vec<String>) -> Result<usize, String> {
+    storage::recycle(&paths)
+}
+
+#[tauri::command]
+async fn roblox_state() -> Value {
+    tauri::async_runtime::spawn_blocking(roblox::state).await.unwrap_or(Value::Null)
+}
+
+#[tauri::command]
+async fn roblox_apply() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| roblox::apply(true)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn roblox_restore() -> Result<(), String> {
+    roblox::restore()
+}
+
+#[tauri::command]
+fn monitors_list() -> Result<Vec<Value>, String> {
+    monitors::list()
+}
+
+#[tauri::command]
+async fn monitor_set(id: String, path: String, primary: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if primary {
+            // the main screen drives the theme
+            ipc::call("look_apply", json!({ "path": path }))?;
+        } else {
+            monitors::set(&id, &path)?;
+        }
+        let mut walls = ipc::call("get_config", json!({}))?["monitor_walls"].as_object().cloned().unwrap_or_default();
+        walls.insert(id, json!(if primary { String::new() } else { path }));
+        ipc::call("set_config", json!({ "patch": { "monitor_walls": walls } }))?;
+        if primary {
+            monitors::reapply(&walls);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn media_control(action: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || media::control(&action)).await.map_err(|e| e.to_string())?
+}
+
+/// Start an app from the dock widget (only apps that are on the dock).
+#[tauri::command]
+fn dock_launch(path: String) -> Result<(), String> {
+    let c = ipc::call_quiet("get_config", json!({}))?;
+    if !c["dock"].as_array().map(|d| d.iter().any(|x| x.as_str() == Some(path.as_str()))).unwrap_or(false) {
+        return Err("Not on the dock".into());
+    }
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("cmd.exe")
+        .raw_arg(format!("/C start \"\" \"{path}\""))
+        .creation_flags(win::CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn look_export_file(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let v = ipc::call("look_export", json!({}))?;
+        std::fs::write(&path, serde_json::to_vec(&v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn look_import_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        if meta.len() > 40 * 1024 * 1024 {
+            return Err("That file is too big to be a look".into());
+        }
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?).map_err(|_| "That isn't a Nightmoth look file".to_string())?;
+        ipc::call("look_import", json!({ "data": v })).map(|n| n.as_str().unwrap_or("").to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn cursor_set(on: bool, accent: String) -> Result<(), String> {
+    ipc::call_quiet("set_config", json!({ "patch": { "accent_cursor": on } }))?;
+    if on {
+        apptheme::set_cursor(&accent)
+    } else {
+        apptheme::reset_cursor();
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn theme_apps_now(accent: String) -> usize {
+    apptheme::theme_apps(&accent)
+}
+
 #[tauri::command]
 fn toast_done() {
     ui_toast::done();
@@ -299,6 +424,7 @@ fn run_app() {
             widgets::start(app.handle().clone());
             tidy::start_auto();
             taskbar::start();
+            roblox::start_auto();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(600));
@@ -320,6 +446,7 @@ fn run_app() {
                     }
                     if tray_only {
                         ui_toast::local("Nightmoth is running", "Autopilot is keeping your PC fast");
+                        userjob::start_delayed_apps();
                     }
                 }
                 Err(e) => {
@@ -348,6 +475,19 @@ fn run_app() {
             tidy_preview,
             tidy_run,
             tidy_undo,
+            storage_scan,
+            storage_recycle,
+            roblox_state,
+            roblox_apply,
+            roblox_restore,
+            monitors_list,
+            monitor_set,
+            media_control,
+            dock_launch,
+            look_export_file,
+            look_import_file,
+            cursor_set,
+            theme_apps_now,
             autostart_get,
             autostart_set,
             quit_app,

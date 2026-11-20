@@ -177,6 +177,28 @@ pub fn startup_set(id: &str, enabled: bool, module: &str) -> Result<String, Stri
     Ok(title)
 }
 
+/// Start an app 60 s after login instead of at login (Nightmoth starts it). Off = back to normal.
+pub fn startup_delay(id: &str, on: bool) -> Result<(), String> {
+    if on {
+        let item = startup_list(true).into_iter().find(|i| i.id == id).ok_or("Startup item not found")?;
+        if id.starts_with("task:") {
+            return Err("Scheduled tasks can't be delayed — turn it off instead".into());
+        }
+        startup_set(id, false, "Speed")?;
+        with_cfg(|c| {
+            c.delayed.retain(|d| d.id != id);
+            c.delayed.push(crate::config::DelayedApp { id: id.into(), name: item.name.clone(), command: item.command.clone() });
+            if !c.known_startup.contains(&id.to_string()) {
+                c.known_startup.push(id.into());
+            }
+        });
+    } else {
+        with_cfg(|c| c.delayed.retain(|d| d.id != id));
+        startup_set(id, true, "Speed")?;
+    }
+    Ok(())
+}
+
 /// Autopilot: block new startup entries that appeared since last check.
 pub fn startup_watch() {
     let items = startup_list(false);

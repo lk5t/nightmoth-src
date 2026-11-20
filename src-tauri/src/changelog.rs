@@ -19,6 +19,10 @@ pub enum Change {
     AppRemoved { name: String },
     AppxRemoved { name: String },
     Files { bytes: u64 },
+    /// Undo by running a program (netsh, bcdedit, PowerShell…). Only the engine writes this log.
+    Command { program: String, args: Vec<String> },
+    /// Undo by copying a backup over a file (e.g. the hosts file).
+    FileRestore { path: String, backup: String },
     Multi { items: Vec<Change> },
 }
 
@@ -152,6 +156,11 @@ fn undo_change(c: &Change) -> Result<(), String> {
         Change::AppRemoved { name } => crate::apps::reinstall(name),
         Change::AppxRemoved { .. } => Err("Store apps can be reinstalled from the Microsoft Store".into()),
         Change::Files { .. } => Err("Deleted junk files can't be brought back".into()),
+        Change::Command { program, args } => {
+            let a: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            win::run(program, &a).map(|_| ())
+        }
+        Change::FileRestore { path, backup } => std::fs::copy(backup, path).map(|_| ()).map_err(|e| e.to_string()),
         Change::Multi { items } => {
             let mut errs = vec![];
             for i in items.iter().rev() {

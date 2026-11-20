@@ -453,3 +453,77 @@ pub fn reg_values_raw(h: Hive, path: &str) -> Vec<(String, Vec<u8>)> {
         Err(_) => vec![],
     }
 }
+
+// ---------------------------------------------------------------- power, idle, efficiency
+
+/// Seconds since the last keyboard/mouse input in this session.
+pub fn idle_secs() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe {
+        if GetLastInputInfo(&mut li) == 0 {
+            return 0;
+        }
+        (GetTickCount().wrapping_sub(li.dwTime) / 1000) as u64
+    }
+}
+
+/// (has a battery, running on battery, battery percent)
+pub fn power_source() -> (bool, bool, u8) {
+    use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut s: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+    if unsafe { GetSystemPowerStatus(&mut s) } == 0 {
+        return (false, false, 100);
+    }
+    let has_battery = s.BatteryFlag != 128 && s.BatteryFlag != 255;
+    (has_battery, has_battery && s.ACLineStatus == 0, s.BatteryLifePercent.min(100))
+}
+
+/// Windows 11 "Efficiency mode" (what Task Manager does): EcoQoS + idle priority.
+pub fn set_efficiency(pid: u32, on: bool) -> bool {
+    use windows_sys::Win32::System::Threading::{
+        ProcessPowerThrottling, SetProcessInformation, IDLE_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    };
+    unsafe {
+        let h = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let st = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: if on { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+        };
+        let ok = SetProcessInformation(
+            h,
+            ProcessPowerThrottling,
+            &st as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        ) != 0;
+        SetPriorityClass(h, if on { IDLE_PRIORITY_CLASS } else { NORMAL_PRIORITY_CLASS });
+        CloseHandle(h);
+        ok
+    }
+}
+
+/// Free and total bytes of the system drive.
+pub fn system_drive_space() -> (u64, u64) {
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_lowercase();
+    for d in sysinfo::Disks::new_with_refreshed_list().list() {
+        if d.mount_point().to_string_lossy().to_lowercase().starts_with(&drive) {
+            return (d.available_space(), d.total_space());
+        }
+    }
+    (0, 0)
+}
+
+/// Delete a whole registry key (and everything under it). Ok if it doesn't exist.
+pub fn reg_delete_tree(h: Hive, path: &str) -> Result<(), String> {
+    match root(h).delete_subkey_all(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}

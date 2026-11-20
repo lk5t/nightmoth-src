@@ -37,10 +37,8 @@ pub fn run() {
             if c.hog_watcher && tick % 2 == 0 && !core().boosting.load(Ordering::Relaxed) {
                 hog_watch(&mut hogs);
             }
-            if c.auto_cleanup && now() - c.last_cleanup > c.cleanup_every_days.max(1) as i64 * 86400 && now() - core().started > 15 * 60 && !core().boosting.load(Ordering::Relaxed) {
-                let freed = crate::speed::cleanup_run(&crate::speed::all_clean_ids().into_iter().filter(|i| i != "recycle").collect::<Vec<_>>(), "Autopilot");
-                toast::show("cleanup", "Cleanup done", &format!("Freed {} of junk", crate::fmt_bytes(freed)));
-            }
+            // everything else runs when it's needed, not on a timetable
+            crate::upkeep::tick(tick);
             if tick % 20 == 5 {
                 crate::apps::unused_tick();
             }
@@ -88,17 +86,30 @@ fn hog_watch(hogs: &mut HashMap<u32, (i64, bool)>) {
         if !entry.1 && t - entry.0 > 5 * 60 {
             entry.1 = true;
             let what = if cpu > c.hog_cpu { format!("{:.0}% CPU", cpu) } else { format!("{} MB RAM", mb) };
+            // Windows 11 Efficiency mode: the app keeps working, just without hogging the PC
             if c.hog_auto_lower {
-                win::set_priority(pid, Priority::BelowNormal);
-                toast::show("hog", &format!("{name} slowed down"), &format!("It was using {what} in the background"));
+                if !win::set_efficiency(pid, true) {
+                    win::set_priority(pid, Priority::BelowNormal);
+                }
+                toast::show_action(
+                    "hog",
+                    &format!("{name} put in Efficiency mode"),
+                    &format!("It was using {what} in the background"),
+                    "Undo",
+                    Box::new(move || {
+                        win::set_efficiency(pid, false);
+                    }),
+                );
             } else {
                 toast::show_action(
                     "hog",
                     &format!("{name} is hogging your PC"),
                     &format!("{what} in the background for 5+ min"),
-                    "Slow it down",
+                    "Efficiency mode",
                     Box::new(move || {
-                        win::set_priority(pid, Priority::BelowNormal);
+                        if !win::set_efficiency(pid, true) {
+                            win::set_priority(pid, Priority::BelowNormal);
+                        }
                     }),
                 );
             }
