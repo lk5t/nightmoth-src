@@ -79,3 +79,4 @@ box.addEventListener("click", async () => {
 });
 
 void getCurrentWindow();
+invoke("ui_log", { msg: "toast window ready" }).catch(() => {});

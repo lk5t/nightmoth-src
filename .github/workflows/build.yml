@@ -38,6 +38,31 @@ jobs:
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
+      # Install the built installer and start the app to make sure it really opens.
+      - name: Smoke test (install + launch)
+        shell: pwsh
+        env:
+          NIGHTMOTH_NO_DIALOG: "1"
+        run: |
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem "$env:ProgramFiles\Nightmoth" -Filter *.exe -Recurse | Where-Object { $_.Name -notlike "uninstall*" } | Select-Object -First 1
+          Write-Host "Installed exe: $($exe.FullName)"
+          $p = Start-Process $exe.FullName -PassThru
+          Start-Sleep -Seconds 30
+          $alive = -not $p.HasExited
+          Write-Host "Process alive after 30s: $alive (exit code: $(if ($p.HasExited) { $p.ExitCode } else { '-' }))"
+          Write-Host "WebView2 processes: $((Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Measure-Object).Count)"
+          Write-Host "----- nightmoth.log -----"
+          Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -ErrorAction SilentlyContinue
+          Write-Host "----- crash.log -----"
+          Get-Content "$env:APPDATA\Nightmoth\crash.log" -ErrorAction SilentlyContinue
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          $log = Get-Content "$env:APPDATA\Nightmoth\nightmoth.log" -Raw -ErrorAction SilentlyContinue
+          if (-not $alive) { Write-Error "Nightmoth exited during startup"; exit 1 }
+          if ($log -notmatch "main window ready") { Write-Error "Main window UI never loaded"; exit 1 }
+          Write-Host "SMOKE TEST PASSED"
+
       # Every push to main refreshes the "latest" release in this repo.
       - name: Publish latest build
         if: github.ref == 'refs/heads/main'

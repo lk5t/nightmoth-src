@@ -3,6 +3,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
+window.addEventListener("error", (e) => invoke("ui_log", { msg: `main error: ${e.message} @ ${e.filename}:${e.lineno}` }).catch(() => {}));
+window.addEventListener("unhandledrejection", (e) => invoke("ui_log", { msg: `main rejection: ${String(e.reason)}` }).catch(() => {}));
+
 /* ================================================================ helpers */
 
 type Any = any;
@@ -799,5 +802,6 @@ function welcome() {
 }
 
 refreshStatus();
+invoke("ui_log", { msg: "main window ready" }).catch(() => {});
 if (localStorage.getItem("nm-welcomed")) go("home");
 else welcome();

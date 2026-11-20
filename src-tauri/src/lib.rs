@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod gallery;
 mod games;
+mod log;
 mod look;
 mod speed;
 mod state;
@@ -109,15 +110,23 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    log::install_panic_hook();
+    log::log(&format!("starting Nightmoth {} args={:?}", env!("CARGO_PKG_VERSION"), std::env::args().collect::<Vec<_>>()));
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            log::log("setup: state");
             state::init(app.handle().clone());
+            log::log("setup: toasts");
             toast::start();
-            build_tray(app)?;
+            log::log("setup: tray");
+            if let Err(e) = build_tray(app) {
+                // the app still works without a tray icon
+                log::log(&format!("tray failed: {e}"));
+            }
 
             let first = !state::cfg().first_run_done;
             if first {
@@ -130,9 +139,12 @@ pub fn run() {
             }
             let tray_only = std::env::args().any(|a| a == "--tray");
             if !tray_only || first {
+                log::log("setup: show main window");
                 show_main(app.handle());
             }
+            log::log("setup: autopilot");
             autopilot::run();
+            log::log("setup: done");
             if tray_only {
                 toast::show("settings", "Nightmoth is running", "Autopilot is keeping your PC fast");
             }
@@ -194,7 +206,12 @@ pub fn run() {
             commands::toast_action,
             commands::toast_test,
             commands::quit_app,
+            commands::ui_log,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Nightmoth");
+        .run(tauri::generate_context!());
+    if let Err(e) = result {
+        let msg = format!("Nightmoth couldn't start: {e}");
+        log::log(&msg);
+        log::error_box(&format!("{msg}\n\nIf this mentions WebView2, install it from https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
+    }
 }

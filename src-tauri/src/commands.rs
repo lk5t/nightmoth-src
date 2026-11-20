@@ -431,3 +431,9 @@ pub fn quit_app(app: tauri::AppHandle) {
     crate::games::end_boost(false);
     app.exit(0);
 }
+
+/// Lets the UI write to the log (startup + JS errors).
+#[tauri::command]
+pub fn ui_log(msg: String) {
+    crate::log::log(&format!("ui: {msg}"));
+}
