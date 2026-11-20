@@ -1,0 +1,107 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+.toast {
+  position: absolute;
+  inset: 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px 0 16px;
+  background: #0a0a0b;
+  border: 1px solid #26262a;
+  border-left: 3px solid #e10600;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6), 0 0 22px rgba(225, 6, 0, 0.18);
+  color: #f2f2f3;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(110%);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.22s;
+  cursor: default;
+}
+.toast.in {
+  opacity: 1;
+  transform: translateX(0);
+}
+.toast img {
+  width: 40px;
+  height: 40px;
+  flex: none;
+}
+.txt {
+  flex: 1;
+  min-width: 0;
+}
+.title {
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.body {
+  font-size: 12px;
+  color: #8a8a92;
+  margin-top: 3px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 0;
+}
+#t-action {
+  flex: none;
+  background: #e10600;
+  color: #fff;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 7px 12px;
+  border-radius: 7px;
+}
+#t-action:hover {
+  background: #ff2d3a;
+  box-shadow: 0 0 14px rgba(255, 45, 58, 0.5);
+}
+#t-action:empty {
+  display: none;
+}
+.x {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  background: none;
+  color: #55555c;
+  font-size: 11px;
+  padding: 2px;
+}
+.x:hover {
+  color: #f2f2f3;
+}
+.timer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: #1a1a1d;
+}
+.timer i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: #e10600;
+  box-shadow: 0 0 8px #e10600;
+  transform-origin: left;
+}
