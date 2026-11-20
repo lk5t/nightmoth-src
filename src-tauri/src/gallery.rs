@@ -311,14 +311,16 @@ pub fn render(id: &str) -> RgbImage {
             if s > 0.9988 && v < 0.5 {
                 c = add(c, [1.0, 1.0, 1.0], 0.5);
             }
-            for i in 0..4 {
+            for i in 0..4u32 {
                 let fi = i as f32;
-                let ridge = 0.45 + fi * 0.12 - fbm(u * (2.0 + fi), fi * 3.0, seed + i, 5) * (0.28 - fi * 0.03);
+                let n = fbm(u * (1.5 + fi * 0.8), fi * 3.0, seed + i, 5);
+                let ridged = 1.0 - (2.0 * n - 1.0).abs();
+                let ridge = 0.50 + fi * 0.11 - (ridged - 0.5) * (0.42 - fi * 0.06);
                 if v > ridge {
-                    let k = 0.06 - fi * 0.014;
-                    c = [k * 0.6, k * 0.7, k * 1.2];
-                    let mist = (-(v - ridge) * 8.0).exp() * 0.05;
-                    c = add(c, [0.4, 0.45, 0.7], mist);
+                    let k = 0.11 - fi * 0.028;
+                    c = [k * 0.55, k * 0.65, k * 1.15];
+                    let mist = (-(v - ridge) * 10.0).exp() * (0.09 - fi * 0.015);
+                    c = add(c, [0.45, 0.5, 0.8], mist);
                 }
             }
             c
@@ -326,7 +328,7 @@ pub fn render(id: &str) -> RgbImage {
         // "void" and anything unknown
         _ => shade(|u, v| {
             let base = [0.012, 0.012, 0.014];
-            let c = add(base, [0.75, 0.04, 0.03], glow(u, v, 0.78, 0.74, 0.42) * 0.33);
+            let c = add(base, [0.8, 0.04, 0.03], glow(u, v, 0.78, 0.74, 0.45) * 0.5);
             let c = add(c, [0.5, 0.02, 0.05], glow(u, v, 0.12, 0.18, 0.25) * 0.08);
             let swirl = fbm(u * 3.0 * aspect, v * 3.0, seed, 5);
             add(c, [0.35, 0.02, 0.02], ((swirl - 0.55) * 2.5).max(0.0) * glow(u, v, 0.7, 0.7, 0.6) * 0.3)
