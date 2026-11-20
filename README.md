@@ -3,8 +3,8 @@
 Windows 11 desktop glow-up + autopilot optimizer. See [SPEC.md](SPEC.md).
 
 - **Stack:** Tauri 2 (Rust) + TypeScript/Vite
-- **Builds:** every push to `main` builds the installer on GitHub Actions (Actions tab → latest run → `Nightmoth-installer`).
-- **Releases:** push a tag like `v0.1.0` to publish the `.exe` to the public repo `lk5t/Nightmoth` (needs the `NIGHTMOTH_RELEASE_TOKEN` secret).
+- **Download:** every push to `main` builds the installer and puts it in this repo's **Releases → "Nightmoth (latest build)"**.
+- **Versions:** push a tag like `v0.1.0` for a versioned release.
 
 ## Build locally (Windows)
 

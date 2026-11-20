@@ -5,8 +5,7 @@
 
 - **Platform:** Windows 11 (x64) only
 - **Stack:** Tauri 2 (Rust backend + web frontend)
-- **Source:** `lk5t/nightmoth-src` (private)
-- **Releases:** `lk5t/Nightmoth` (public — README, LICENSE, screenshots, `.exe` installer in Releases only)
+- **Repo:** `lk5t/nightmoth-src` — source and the `.exe` installer (in Releases), all in one place
 - **App look:** black and red, fixed (the app does NOT re-colour with the wallpaper)
 
 ---
