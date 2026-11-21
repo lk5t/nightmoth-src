@@ -255,6 +255,17 @@ fn helper_loop(dll: std::path::PathBuf) {
 }
 
 pub fn start(helper_dll: Option<std::path::PathBuf>) {
+    // old helper copies moved aside by the installer: remove the ones Explorer no longer uses
+    if let Some(dir) = helper_dll.as_ref().and_then(|d| d.parent()) {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.filter_map(|e| e.ok()) {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                if n.starts_with("nightmoth_tap.") && n.ends_with(".old") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
     if let Some(dll) = helper_dll {
         helper_loop(dll);
     }
