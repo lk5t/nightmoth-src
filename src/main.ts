@@ -165,6 +165,19 @@ function go(name: string) {
   void content.offsetWidth;
   content.style.animation = "";
   content.innerHTML = loading(engineUp ? "Loading" : "Starting the Nightmoth engine");
+  if (!engineUp && name !== "engine") {
+    // say how long it's taking, and offer the reason instead of a silent spinner
+    const started = Date.now();
+    const tick = window.setInterval(() => {
+      const box = content.querySelector(".loading");
+      if (!box || engineUp) { clearInterval(tick); return; }
+      const secs = Math.round((Date.now() - started) / 1000);
+      box.innerHTML = `Starting the Nightmoth engine… ${secs}s${secs >= 8 ? ` <button class="btn small" id="whyslow" style="margin-left:12px">See what's happening</button>` : ""}`;
+      const w = document.getElementById("whyslow");
+      if (w) w.onclick = () => { clearInterval(tick); go("engine"); };
+    }, 1000);
+    timers.push(tick);
+  }
   content.scrollTop = 0;
   p.render(content).catch((e) => {
     // the engine can't be reached: show why, instead of a page that never loads

@@ -48,7 +48,13 @@ jobs:
           Start-Process $setup.FullName -ArgumentList "/S" -Wait
           $exe = Get-ChildItem "$env:ProgramFiles\Nightmoth" -Filter *.exe -Recurse | Where-Object { $_.Name -notlike "uninstall*" } | Select-Object -First 1
           Write-Host "Installed exe: $($exe.FullName)"
-          $p = Start-Process $exe.FullName -PassThru
+          # Run it like a real PC does: as a normal (non-admin) user, so the engine has to be set up
+          # through the admin prompt. On this unattended machine the prompt is auto-approved.
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f | Out-Null
+          Start-Process runas.exe -ArgumentList "/trustlevel:0x20000", "`"$($exe.FullName)`"" -Wait
+          Start-Sleep -Seconds 3
+          $p = Get-Process nightmoth -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
+          if (-not $p) { Write-Host "runas didn't start it; starting normally"; $p = Start-Process $exe.FullName -PassThru }
           # The runner is an admin account, and WebView2 is slow to start elevated (20-60 s),
           # so wait for the startup steps to show up in the logs instead of a fixed time.
           $need = @("main window ready", "app: engine connected", "widgets window created")
@@ -61,7 +67,8 @@ jobs:
           Start-Sleep -Seconds 5
           $alive = -not $p.HasExited
           Write-Host "App alive: $alive"
-          Write-Host "Nightmoth processes:"
+          Write-Host "Nightmoth processes (with elevation):"
+          Get-Process nightmoth -ErrorAction SilentlyContinue | ForEach-Object { try { $h = $_.Handle; Write-Host "  $($_.Id) handle ok" } catch { Write-Host "  $($_.Id) (no access)" } }
           Get-CimInstance Win32_Process -Filter "Name='nightmoth.exe'" | ForEach-Object { Write-Host "  $($_.ProcessId) $($_.CommandLine)" }
           Write-Host "Scheduled task:"
           schtasks /Query /TN "Nightmoth Engine" 2>&1 | Write-Host

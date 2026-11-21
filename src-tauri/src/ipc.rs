@@ -251,6 +251,7 @@ static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 /// "Try again" from the diagnostics screen: allow one more admin prompt.
 pub fn allow_retry() {
     PROMPTED.store(false, std::sync::atomic::Ordering::Relaxed);
+    *LAST_FAIL.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 pub fn last_error() -> String {
@@ -283,41 +284,69 @@ fn diagnose() -> String {
         return format!("The engine couldn't start: {}", l.split("] ").nth(1).unwrap_or(l));
     }
     if !elog.contains("engine ready") {
-        return "The engine never started. Your antivirus may have blocked it — allow Nightmoth, then press Try again.".into();
+        let last = elog.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.split("] ").nth(1).unwrap_or(l).to_string());
+        return match last {
+            Some(l) => format!("The engine didn't finish starting. Its last message: \"{l}\". Press Try again, and if it happens again copy the details below."),
+            None => "Windows never ran the engine (it wrote nothing at all). Press Try again and click Yes on the admin prompt; if it happens again copy the details below.".into(),
+        };
     }
     "The engine started but the app can't reach it. Press Try again; if it keeps happening, copy the details and send them.".into()
 }
 
-/// Start the engine and wait until it answers. At most one admin prompt per app run.
+static LAST_FAIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn fail(msg: String) -> Result<(), String> {
+    log(&format!("app: engine unreachable: {msg}"));
+    *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
+    *LAST_FAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    Err(msg)
+}
+
+/// The engine is running but turned this app away (an admin prompt can't fix that).
+fn engine_refusing() -> bool {
+    let elog = tail(&win::engine_dir().join("nightmoth.log"), 15);
+    elog.lines().rev().take(6).any(|l| l.contains("refused a connection"))
+}
+
+/// Start the engine and wait until it answers. Fast path first; at most one admin prompt
+/// per app run; callers queued behind a failed attempt get its answer straight away.
 pub fn ensure_engine() -> Result<(), String> {
     let _guard = STARTING.lock().unwrap_or_else(|e| e.into_inner());
     if engine_alive() {
         return Ok(());
     }
-    log("app: starting engine via scheduled task");
-    if win::run("schtasks.exe", &["/Run", "/TN", TASK]).is_ok() && wait_alive(Duration::from_secs(20)) {
-        return Ok(());
+    if let Some(t) = *LAST_FAIL.lock().unwrap_or_else(|e| e.into_inner()) {
+        if t.elapsed() < Duration::from_secs(20) {
+            let e = last_error();
+            return Err(if e.is_empty() { "The Nightmoth engine isn't running".into() } else { e });
+        }
+    }
+    let task_exists = win::run("schtasks.exe", &["/Query", "/TN", TASK]).is_ok();
+    if task_exists {
+        log("app: starting engine via scheduled task");
+        if win::run("schtasks.exe", &["/Run", "/TN", TASK]).is_ok() && wait_alive(Duration::from_secs(10)) {
+            return Ok(());
+        }
+        if engine_refusing() {
+            return fail(diagnose());
+        }
     }
     if PROMPTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let e = last_error();
-        return Err(if e.is_empty() { "The Nightmoth engine isn't running".into() } else { e });
+        return fail(if e.is_empty() { diagnose() } else { e });
     }
-    // one admin prompt: registers the engine task for this account AND starts the engine
+    // one admin prompt: closes any stuck engine, registers the task for this account, starts the engine
     let sid = current_sid();
     log(&format!("app: setting up the engine (one admin prompt) for {sid}"));
     if let Err(e) = run_elevated(&format!("--setup-engine {sid}")) {
         log(&format!("app: setup declined/failed: {e}"));
-        let msg = "Nightmoth needs admin permission once to set up its engine. Press Try again and click Yes on the Windows prompt.".to_string();
-        *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
-        return Err(msg);
+        return fail("Nightmoth needs admin permission once to set up its engine. Press Try again and click Yes on the Windows prompt.".into());
     }
-    if wait_alive(Duration::from_secs(40)) {
+    if wait_alive(Duration::from_secs(20)) {
+        *LAST_FAIL.lock().unwrap_or_else(|e| e.into_inner()) = None;
         return Ok(());
     }
-    let msg = diagnose();
-    log(&format!("app: engine unreachable: {msg}"));
-    *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
-    Err(msg)
+    fail(diagnose())
 }
 
 /// Everything useful for figuring out a broken engine, for the diagnostics screen.
@@ -337,10 +366,11 @@ pub fn diagnostics() -> serde_json::Value {
 fn wait_alive(max: Duration) -> bool {
     let t = Instant::now();
     while t.elapsed() < max {
-        if engine_alive() {
+        // quick probe: a healthy engine answers ping in milliseconds
+        if matches!(try_call("ping", &json!({}), Duration::from_millis(1500)), Ok(Ok(_))) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(400));
+        std::thread::sleep(Duration::from_millis(300));
     }
     false
 }
@@ -392,15 +422,20 @@ pub fn setup_engine(sid: Option<&str>) -> Result<(), String> {
         "Unregister-ScheduledTask -TaskName 'Nightmoth' -Confirm:$false -ErrorAction SilentlyContinue; \
          $a = New-ScheduledTaskAction -Execute {exe} -Argument '--engine'; \
          $p = New-ScheduledTaskPrincipal -UserId {user} -LogonType Interactive -RunLevel Highest; \
-         $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 5; \
+         $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances StopExisting -Priority 5; \
          Register-ScheduledTask -TaskName '{TASK}' -Action $a -Principal $p -Settings $s -Force | Out-Null"
     );
+    // an engine from an older version (or one that froze) would sit on the job: close it
+    let me = std::process::id();
+    let _ = win::ps(&format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='nightmoth.exe'\" | Where-Object {{ $_.CommandLine -match '--engine' -and $_.ProcessId -ne {me} }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    ));
     let registered = win::ps(&script);
     if let Err(e) = &registered {
         log(&format!("engine task setup failed: {e}"));
     }
     // start the engine right away from this elevated process (works even if the task couldn't be made)
-    if !engine_alive() {
+    {
         use std::os::windows::process::CommandExt;
         let spawned = std::process::Command::new(&exe_path)
             .arg("--engine")
