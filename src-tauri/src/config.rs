@@ -162,6 +162,8 @@ pub struct Config {
     pub tidy_last: i64,
     /// sort every app on the desktop into folders by kind, automatically
     pub organize_auto: bool,
+    /// "spread" (groups around the screen) or "side" (all down one side)
+    pub organize_layout: String,
     /// remove preinstalled junk automatically (and again when Windows brings it back)
     pub auto_debloat: bool,
     pub last_debloat: i64,
@@ -265,6 +267,7 @@ impl Default for Config {
             tidy_auto: true,
             tidy_last: 0,
             organize_auto: false,
+            organize_layout: "spread".into(),
             auto_debloat: true,
             last_debloat: 0,
             notes: String::new(),

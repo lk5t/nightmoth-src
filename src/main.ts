@@ -669,9 +669,11 @@ PAGES.look = {
       const loose = apps.filter((x) => !x.sorted).length;
       const groups = (o.kinds as string[]).map((k) => [k, apps.filter((x) => x.kind === k)] as [string, Any[]]).filter((g) => g[1].length);
       box.innerHTML = `<div class="row between"><div><h3>${apps.length ? `${apps.length} apps on your desktop${loose ? ` · ${loose} not grouped yet` : " · all grouped"}` : "No apps on your desktop"}</h3>
-          <p class="sub" style="margin:0">Every icon stays on your desktop, placed next to similar apps: games together, social apps together and so on, in neat blocks down the calmer side of your wallpaper, away from the widgets. The kind of each app comes from its name, where it's installed, its publisher and more; anything unclear goes with "Other apps". Pick a different group below and Nightmoth remembers. Undo puts every icon back where it was.</p></div>
+          <p class="sub" style="margin:0">Every icon stays on your desktop, placed next to similar apps: games together, social apps together and so on, in neat blocks spread around the calm parts of your wallpaper, away from the widgets. The kind of each app comes from its name, where it's installed, its publisher and more; anything unclear goes with "Other apps". Pick a different group below and Nightmoth remembers. Undo puts every icon back where it was.</p></div>
           <div class="row">${o.can_undo ? `<button class="btn" id="oundo">Undo</button>` : ""}<button class="btn primary" id="orun">${loose ? "Organize now" : "Re-arrange"}</button></div></div>
-        <div class="item" style="margin-top:10px;border-top:1px solid var(--border);padding-top:12px"><div class="info"><div class="name">Organize automatically</div><div class="desc">New apps join their group within a minute of appearing on your desktop. Part of Autopilot.</div></div>${toggle('id="oauto"', c.organize_auto)}</div>
+        <div class="item" style="margin-top:10px;border-top:1px solid var(--border);padding-top:12px"><div class="info"><div class="name">Layout</div><div class="desc">Spread out: each group gets its own calm area of the screen · One side: all groups down the calmer side</div></div>
+          <select id="olayout"><option value="spread" ${c.organize_layout !== "side" ? "selected" : ""}>Spread out</option><option value="side" ${c.organize_layout === "side" ? "selected" : ""}>Along one side</option></select></div>
+        <div class="item"><div class="info"><div class="name">Organize automatically</div><div class="desc">New apps join their group within a minute of appearing on your desktop. Part of Autopilot.</div></div>${toggle('id="oauto"', c.organize_auto)}</div>
         ${groups.map(([k, list]) => `<div class="section-title" style="margin:16px 0 6px"><h2>${esc(k)}</h2><span class="muted">${list.length}</span></div>
           <div class="list">${list.map((x) => `<div class="item"><div class="info"><div class="name">${esc(x.name)} ${x.public ? `<span class="badge">All users</span>` : ""} ${x.sorted ? "" : `<span class="badge red">New</span>`}</div><div class="desc">${esc(x.why)}</div></div>
             <select data-okind="${esc(x.file)}">${(o.kinds as string[]).map((kk) => `<option ${kk === x.kind ? "selected" : ""}>${esc(kk)}</option>`).join("")}</select></div>`).join("")}</div>`).join("")}`;
@@ -679,6 +681,13 @@ PAGES.look = {
       if (run) run.onclick = () => busy(run, async () => { const n = await call<number>("organize_run"); snack(n ? `${n} apps grouped` : "Desktop re-arranged"); await drawOrganize(); });
       const un = document.getElementById("oundo") as HTMLButtonElement | null;
       if (un) un.onclick = () => busy(un, async () => { const n = await call<number>("organize_undo"); snack(`${n} icons put back`); await drawOrganize(); });
+      q<HTMLSelectElement>("#olayout").onchange = async (e) => {
+        const v = (e.target as HTMLSelectElement).value;
+        c.organize_layout = v;
+        await setCfg({ organize_layout: v });
+        await call("organize_run");
+        snack(v === "side" ? "Groups along one side" : "Groups spread around the screen");
+      };
       q<HTMLInputElement>("#oauto").onchange = async (e) => {
         const on = (e.target as HTMLInputElement).checked;
         c.organize_auto = on;

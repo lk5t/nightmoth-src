@@ -500,29 +500,133 @@ fn place(view: &View, moves: &[(usize, POINT)]) -> Result<(), String> {
     }
 }
 
-/// Which side of the screen the groups go on, and how the wallpaper looks there.
-fn layout_side() -> bool {
-    // true = left
-    let Ok(h) = crate::ipc::call_quiet("desktop_layout_hint", json!({})) else { return true };
-    let busy: Vec<f64> = h["busy"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+/// How busy each ninth of the wallpaper is (row by row) and where the widgets sit.
+fn layout_hint() -> (Vec<f64>, Option<usize>, String) {
+    let Ok(h) = crate::ipc::call_quiet("desktop_layout_hint", json!({})) else { return (vec![0.0; 9], None, "spread".into()) };
+    let mut busy: Vec<f64> = h["busy"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
     if busy.len() != 9 {
-        return true;
+        busy = vec![0.0; 9];
     }
-    let mut left = busy[0] + busy[3] + busy[6];
-    let mut right = busy[2] + busy[5] + busy[8];
-    // keep clear of the widgets
-    if h["widgets_on"].as_bool().unwrap_or(false) {
-        match h["widget_cell"].as_u64().unwrap_or(2) % 3 {
-            0 => left += 2.0,
-            2 => right += 2.0,
-            _ => {}
-        }
-    }
-    left <= right * 1.15
+    let widgets = h["widgets_on"].as_bool().unwrap_or(false).then(|| h["widget_cell"].as_u64().unwrap_or(2) as usize);
+    let style = h["layout"].as_str().unwrap_or("spread").to_string();
+    (busy, widgets, style)
 }
 
-/// Lay every desktop icon out in tidy groups: each kind is a compact block, blocks run down
-/// the calmer side of the wallpaper (away from the widgets) with a gap between them.
+/// One block of icons: its group members and its size in grid cells.
+struct Block {
+    items: Vec<usize>,
+    w: i32,
+    h: i32,
+}
+
+fn block_for(items: Vec<usize>, max_h: i32) -> Block {
+    let n = items.len() as i32;
+    // compact and roughly square-ish, at most 5 tall unless the group is huge
+    let mut h = if n <= 3 { n } else if n <= 8 { (n + 1) / 2 } else if n <= 15 { 5 } else { (n + 2) / 3 };
+    h = h.clamp(1, max_h.max(1));
+    let w = (n + h - 1) / h;
+    Block { items, w, h }
+}
+
+/// Spread out: every group is a block placed, biggest first, at the free spot that's calmest
+/// on the wallpaper and closest to a screen edge or corner — never under the widgets, never
+/// touching another group (one empty space around every block).
+fn layout_spread(blocks: &[Block], cols: i32, rows: i32, busy: &[f64], widgets: Option<usize>) -> Vec<(usize, i32, i32)> {
+    let ninth = |c: i32, r: i32| ((r * 3 / rows).min(2) * 3 + (c * 3 / cols).min(2)) as usize;
+    let mut taken = vec![vec![false; cols as usize]; rows as usize];
+    let mut out = vec![];
+    let mut idx: Vec<usize> = (0..blocks.len()).collect();
+    idx.sort_by_key(|i| -(blocks[*i].items.len() as i32));
+    for bi in idx {
+        let b = &blocks[bi];
+        let (w, h) = (b.w.min(cols), b.h.min(rows));
+        let mut best: Option<(f64, i32, i32)> = None;
+        for y in 0..=(rows - h) {
+            for x in 0..=(cols - w) {
+                // free, with a one-space gap around it
+                let mut free = true;
+                'check: for yy in (y - 1).max(0)..(y + h + 1).min(rows) {
+                    for xx in (x - 1).max(0)..(x + w + 1).min(cols) {
+                        if taken[yy as usize][xx as usize] {
+                            free = false;
+                            break 'check;
+                        }
+                    }
+                }
+                if !free {
+                    continue;
+                }
+                let mut score = 0.0;
+                for yy in y..y + h {
+                    for xx in x..x + w {
+                        let z = ninth(xx, yy);
+                        score += busy[z] * 3.0;
+                        if Some(z) == widgets {
+                            score += 50.0;
+                        }
+                        if z == 4 {
+                            score += 2.0; // the middle is usually the wallpaper's subject
+                        }
+                    }
+                }
+                score /= (w * h) as f64;
+                // hug the edges: corners best, then side edges, then top/bottom
+                let dx = x.min(cols - (x + w)) as f64;
+                let dy = y.min(rows - (y + h)) as f64;
+                score += dx * 0.9 + dy * 0.45 + dx.min(dy) * 0.3;
+                if best.map(|b| score < b.0).unwrap_or(true) {
+                    best = Some((score, x, y));
+                }
+            }
+        }
+        let Some((_, x0, y0)) = best else { continue };
+        let right = x0 + w / 2 > cols / 2;
+        for yy in y0..y0 + h {
+            for xx in x0..x0 + w {
+                taken[yy as usize][xx as usize] = true;
+            }
+        }
+        for (j, item) in b.items.iter().enumerate() {
+            let j = j as i32;
+            // blocks on the right fill from the screen edge inwards
+            let col = if right { x0 + w - 1 - j / h } else { x0 + j / h };
+            out.push((*item, col.clamp(0, cols - 1), (y0 + j % h).clamp(0, rows - 1)));
+        }
+    }
+    out
+}
+
+/// Along one side: blocks run down the calmer side, next column when one is full.
+fn layout_side(blocks: &[Block], cols: i32, rows: i32, busy: &[f64], widgets: Option<usize>) -> Vec<(usize, i32, i32)> {
+    let mut left = busy[0] + busy[3] + busy[6];
+    let mut right = busy[2] + busy[5] + busy[8];
+    match widgets.map(|w| w % 3) {
+        Some(0) => left += 2.0,
+        Some(2) => right += 2.0,
+        _ => {}
+    }
+    let on_left = left <= right * 1.15;
+    let mut out = vec![];
+    let (mut band, mut band_w, mut row) = (0i32, 0i32, 0i32);
+    for b in blocks {
+        if row > 0 && row + b.h > rows {
+            band += band_w;
+            band_w = 0;
+            row = 0;
+        }
+        for (j, item) in b.items.iter().enumerate() {
+            let j = j as i32;
+            let col = band + j / b.h;
+            let col = if on_left { col } else { cols - 1 - col };
+            out.push((*item, col.clamp(0, cols - 1), (row + j % b.h).clamp(0, rows - 1)));
+        }
+        band_w = band_w.max(b.w);
+        row += b.h + 1;
+    }
+    out
+}
+
+/// Lay every desktop icon out in tidy groups of similar apps.
 fn arrange(apps: &[DesktopApp]) -> Result<usize, String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN};
     let view = desktop_view()?;
@@ -536,11 +640,12 @@ fn arrange(apps: &[DesktopApp]) -> Result<usize, String> {
     let (cx, cy) = (spacing.x.max(60), spacing.y.max(70));
     let (l, t, r, b) = crate::win::work_area();
     let (vx, vy) = unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN)) };
-    let (ox, oy) = (l - vx + cx / 8, t - vy + cy / 10);
     let cols = ((r - l) / cx).max(1);
     let rows = ((b - t) / cy).max(1);
+    // centre the grid in the work area so edge blocks have the same margin on both sides
+    let (ox, oy) = (l - vx + ((r - l) - cols * cx) / 2, t - vy + ((b - t) - rows * cy) / 2);
 
-    // groups: Windows' own icons first (Recycle Bin, This PC), then each kind, then files & folders
+    // groups: Windows' own icons (Recycle Bin, This PC), each kind, then files & folders
     let mut groups: Vec<Vec<usize>> = vec![vec![]; KINDS.len() + 2];
     for (i, ic) in view.icons.iter().enumerate() {
         let lname = ic.name.to_lowercase();
@@ -553,46 +658,34 @@ fn arrange(apps: &[DesktopApp]) -> Result<usize, String> {
             groups[KINDS.len() + 1].push(i);
         }
     }
-    for g in groups.iter_mut() {
-        g.sort_by_key(|i| {
-            let n = &view.icons[*i].name;
-            Path::new(n).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_else(|| n.to_lowercase())
-        });
-    }
+    let key = |i: &usize| {
+        let n = &view.icons[*i].name;
+        Path::new(n).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_else(|| n.to_lowercase())
+    };
+    let blocks: Vec<Block> = groups
+        .into_iter()
+        .filter(|g| !g.is_empty())
+        .map(|mut g| {
+            g.sort_by_key(key);
+            block_for(g, (rows / 2).max(3))
+        })
+        .collect();
 
-    let left = layout_side();
-    let mut moves: Vec<(usize, POINT)> = vec![];
-    let (mut band, mut band_w, mut row) = (0i32, 0i32, 0i32);
-    for g in groups.iter().filter(|g| !g.is_empty()) {
-        let n = g.len() as i32;
-        // compact blocks: up to 5 tall, a bit taller for big groups
-        let mut h = if n <= 10 { n.min(5) } else { (n + (n + 5) / 6 - 1) / ((n + 5) / 6) };
-        h = h.min(rows);
-        let w = (n + h - 1) / h;
-        if row > 0 && row + h > rows {
-            band += band_w;
-            band_w = 0;
-            row = 0;
-        }
-        for (j, idx) in g.iter().enumerate() {
-            let j = j as i32;
-            let col = band + j / h;
-            let col = if left { col } else { cols - 1 - col };
-            let rr = row + j % h;
-            moves.push((*idx, POINT { x: ox + col.clamp(0, cols - 1) * cx, y: oy + rr.min(rows - 1) * cy }));
-        }
-        band_w = band_w.max(w);
-        row += h + 1; // one empty space between groups
-        if row >= rows {
-            band += band_w;
-            band_w = 0;
-            row = 0;
-        }
-    }
-    // remember where everything was, for Undo
+    let (busy, widgets, style) = layout_hint();
+    let cells = if style == "side" {
+        layout_side(&blocks, cols, rows, &busy, widgets)
+    } else {
+        layout_spread(&blocks, cols, rows, &busy, widgets)
+    };
+    let moves: Vec<(usize, POINT)> = cells.into_iter().map(|(i, c, r)| (i, POINT { x: ox + c * cx, y: oy + r * cy })).collect();
+    crate::log::log(&format!("organize: {} icons, grid {cols}x{rows}, spacing {cx}x{cy}, layout {style}", moves.len()));
+
+    // remember where everything was, for Undo (only the first time, so Undo goes back to your own layout)
     let mut mem = load();
-    mem.before = view.icons.iter().map(|i| (i.name.clone(), i.pos.x, i.pos.y)).collect();
-    save(&mem);
+    if mem.before.is_empty() {
+        mem.before = view.icons.iter().map(|i| (i.name.clone(), i.pos.x, i.pos.y)).collect();
+        save(&mem);
+    }
     place(&view, &moves)?;
     Ok(moves.len())
 }

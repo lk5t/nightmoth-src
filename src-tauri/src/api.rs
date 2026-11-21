@@ -164,7 +164,7 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
             let wall = current_wall(&c);
             let busy = if wall.is_empty() { vec![] } else { look::analyze(&wall).map(|x| x.busy).unwrap_or_default() };
             let w = look::widgets_state();
-            ok(json!({ "busy": busy, "widget_cell": w.cell, "widgets_on": w.on && !w.widgets.is_empty() }))
+            ok(json!({ "busy": busy, "widget_cell": w.cell, "widgets_on": w.on && !w.widgets.is_empty(), "layout": c.organize_layout }))
         }
         "public_desktop_move" => {
             let moves: Vec<Value> = arg(a, "moves")?;
