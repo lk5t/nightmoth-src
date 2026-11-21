@@ -42,7 +42,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub fn fmt_bytes(b: u64) -> String {
     let b = b as f64;
@@ -166,18 +166,29 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Nightmoth", true, None::<&str>)?;
     let optimize = MenuItem::with_id(app, "optimize", "Optimize now", true, None::<&str>)?;
     let autopilot = CheckMenuItem::with_id(app, "autopilot", "Autopilot", true, true, None::<&str>)?;
+    let perfect = MenuItem::with_id(app, "perfect", "Make my PC perfect…", true, None::<&str>)?;
+    let organize_now = MenuItem::with_id(app, "organize", "Organize desktop now", true, None::<&str>)?;
     let next = MenuItem::with_id(app, "next_wall", "Next wallpaper", true, None::<&str>)?;
+    let invisible = CheckMenuItem::with_id(app, "invisible", "Invisible taskbar", true, true, None::<&str>)?;
+    let widgets_item = CheckMenuItem::with_id(app, "widgets", "Desktop widgets", true, true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &optimize, &next, &autopilot, &sep, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&open, &perfect, &optimize, &organize_now, &next, &sep2, &invisible, &widgets_item, &autopilot, &sep, &quit],
+    )?;
 
-    // show the real Autopilot state once the engine answers
-    let ap_init = autopilot.clone();
+    // show the real states once the engine answers
+    let (ap_init, inv_init, wid_init) = (autopilot.clone(), invisible.clone(), widgets_item.clone());
     std::thread::spawn(move || {
         if let Ok(c) = ipc::call("get_config", json!({})) {
             let _ = ap_init.set_checked(c["autopilot"].as_bool().unwrap_or(true));
+            let _ = inv_init.set_checked(c["taskbar_style"].as_str().unwrap_or("clear") != "normal");
+            let _ = wid_init.set_checked(c["widgets_on"].as_bool().unwrap_or(true));
         }
     });
+    let (inv, wid) = (invisible.clone(), widgets_item.clone());
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     let ap = autopilot.clone();
@@ -190,6 +201,31 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "open" => show_main(app),
             "optimize" => engine_bg("optimize_now"),
             "next_wall" => engine_bg("slideshow_next"),
+            "perfect" => {
+                show_main(app);
+                let _ = app.emit_to("main", "open-page", "smart");
+            }
+            "organize" => {
+                std::thread::spawn(|| match organize::run(std::time::Duration::ZERO) {
+                    Ok(m) if !m.is_empty() => ui_toast::local("Desktop organized", &format!("{} apps sorted into folders", m.len())),
+                    Ok(_) => ui_toast::local("Desktop organized", "Everything was already in its folder"),
+                    Err(e) => ui_toast::local("Couldn't organize", &e),
+                });
+            }
+            "invisible" => {
+                let inv = inv.clone();
+                std::thread::spawn(move || {
+                    let on = inv.is_checked().unwrap_or(true);
+                    let _ = ipc::call("desktop_set", json!({ "key": "taskbar", "value": if on { "clear" } else { "normal" } }));
+                });
+            }
+            "widgets" => {
+                let wid = wid.clone();
+                std::thread::spawn(move || {
+                    let on = wid.is_checked().unwrap_or(true);
+                    let _ = ipc::call("set_config", json!({ "patch": { "widgets_on": on } }));
+                });
+            }
             "autopilot" => {
                 let ap = ap.clone();
                 std::thread::spawn(move || {

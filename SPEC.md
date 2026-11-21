@@ -199,6 +199,14 @@ Kind is decided by, in order: the user's own choice (a folder picked in Nightmot
 
 Public desktop shortcuts are moved by the engine (admin) only into the user's own desktop category folders, with the same checks on the way back. "Organize automatically" (Autopilot) sorts new apps within a minute (shortcuts younger than 45 s are left until the installer finishes). The last organize can be undone. Tidy desktop leaves app programs to the organizer.
 
+### 3.10 Added in 0.6 — one click, more automatic
+
+- **Make my PC perfect** (Home, tray, first-run welcome): a live checklist that runs restore point → repair other tools' damage → junk cleanup → block ads & tracking → safe services off → delay heavy startup apps → Game Mode, night-only update restarts, lighter visuals on weak PCs → fastest DNS (only if clearly faster) → every Autopilot switch on (incl. organize desktop, widgets, invisible taskbar, app theming) and the theme re-applied → organize desktop apps → Roblox tuned. Nothing is uninstalled; everything is undoable.
+- **Every game boosted**: anything other than browsers/players/tools that stays fullscreen or borderless-fullscreen for 10 s is boosted and added to the Games list (where it can be switched off).
+- **Startup guard delays instead of blocks** heavy apps that add themselves (Discord, Steam, Spotify…), with "Start normally" on the pop-up; other new entries are still blocked with "Allow".
+- **Autopilot activity feed** on Home.
+- **Tray**: Make my PC perfect, Organize desktop now, Invisible taskbar and Desktop widgets switches.
+
 ## 4. Toasts (Razer Cortex style)
 - Bottom-right of primary monitor, above the taskbar: 392×112 logical px window (card inset 10 px), sized from the primary monitor's scale factor so it is never cut off
 - Black card `#0A0A0B`, red left edge + red countdown bar, moth icon, title + one line

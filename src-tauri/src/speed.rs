@@ -215,6 +215,23 @@ pub fn startup_watch() {
         if c.known_startup.contains(&item.id) || c.startup_allow.contains(&item.id) {
             continue;
         }
+        // apps you'd want anyway (Discord, Steam, Spotify…) just start a minute later instead
+        let heavy_wanted = !item.id.starts_with("task:") && item.impact == "High";
+        if heavy_wanted && startup_delay(&item.id, true).is_ok() {
+            with_cfg(|cf| cf.stats.startup_blocked += 1);
+            let id = item.id.clone();
+            toast::show_action(
+                "startup",
+                &format!("{} will start a minute later", item.name),
+                "So your desktop is ready first",
+                "Start normally",
+                Box::new(move || {
+                    let _ = startup_delay(&id, false);
+                    with_cfg(|cf| cf.startup_allow.push(id.clone()));
+                }),
+            );
+            continue;
+        }
         if startup_set(&item.id, false, "Autopilot").is_ok() {
             with_cfg(|cf| cf.stats.startup_blocked += 1);
             let id = item.id.clone();
@@ -876,4 +893,15 @@ pub fn optimize_now() -> OptimizeReport {
         &format!("Freed {} · {} privacy fixes · {} services off", crate::fmt_bytes(freed), privacy, services),
     );
     OptimizeReport { freed, privacy, services, restore_point: rp }
+}
+
+/// Delay every heavy startup app that's still starting at login (Smart setup).
+pub fn delay_heavy_startup() -> u32 {
+    let mut n = 0;
+    for item in startup_list(false) {
+        if item.enabled && item.impact == "High" && !item.id.starts_with("task:") && startup_delay(&item.id, true).is_ok() {
+            n += 1;
+        }
+    }
+    n
 }

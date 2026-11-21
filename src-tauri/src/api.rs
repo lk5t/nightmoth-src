@@ -354,6 +354,7 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
             toast::show("cleanup", "Deep clean done", &format!("Freed {}", crate::fmt_bytes(total)));
             ok(json!({ "report": report, "total": total }))
         }
+        "smart_step" => ok(smart_step(&arg::<String>(a, "step")?)?),
         "updates_list" => ok(crate::updates::available()),
         "updates_run" => {
             let id: Option<String> = arg(a, "id").unwrap_or(None);
@@ -407,4 +408,91 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
 
         _ => Err(format!("Unknown command: {cmd}")),
     }
+}
+
+/// One step of "Make my PC perfect". Returns a short line for the checklist.
+fn smart_step(step: &str) -> Result<String, String> {
+    Ok(match step {
+        "restore" => {
+            speed::restore_point(true).map(|_| "Restore point made — everything can be rolled back".to_string()).unwrap_or_else(|_| "Restore points are off on this PC — every change still has Undo".into())
+        }
+        "repair" => {
+            let (fixed, restart, _) = crate::fixer::fix_all("Smart setup");
+            match (fixed.len(), restart) {
+                (0, _) => "Nothing broken by other tools".into(),
+                (n, true) => format!("Repaired {n} things other tools broke (restart to finish)"),
+                (n, false) => format!("Repaired {n} things other tools broke"),
+            }
+        }
+        "cleanup" => {
+            let ids: Vec<String> = speed::all_clean_ids().into_iter().filter(|i| i != "recycle").collect();
+            format!("Freed {} of junk", crate::fmt_bytes(speed::cleanup_run(&ids, "Smart setup")))
+        }
+        "privacy" => {
+            let mut n = 0;
+            for p in speed::privacy_list() {
+                if !p.on && speed::privacy_set(&p.id, true, "Smart setup").is_ok() {
+                    n += 1;
+                }
+            }
+            if n == 0 { "Ads & tracking already blocked".into() } else { format!("Blocked {n} kinds of ads & tracking") }
+        }
+        "services" => {
+            let mut n = 0;
+            for sv in speed::services_list() {
+                if sv.exists && sv.group != "xbox" && sv.start != 4 && speed::service_set(&sv.name, true, "Smart setup").is_ok() {
+                    n += 1;
+                }
+            }
+            if n == 0 { "Background services already lean".into() } else { format!("Turned off {n} useless background services") }
+        }
+        "startup" => {
+            let n = speed::delay_heavy_startup();
+            if n == 0 { "Startup already quick".into() } else { format!("{n} heavy apps now start a minute after login") }
+        }
+        "power" => {
+            let _ = speed::game_mode_set(true, "Smart setup");
+            let _ = crate::upkeep::night_restarts("Smart setup");
+            let light = crate::upkeep::weak_pc() && !crate::upkeep::visuals_light() && crate::upkeep::lighter_visuals("Smart setup").is_ok();
+            if light { "Game Mode on · updates restart at night · lighter visuals for your PC".into() } else { "Game Mode on · updates restart only at night".into() }
+        }
+        "dns" => match crate::net::dns_auto() {
+            Ok(_) => "DNS checked — using the fastest for your connection".into(),
+            Err(_) => "DNS test skipped (no internet)".into(),
+        },
+        "automation" => {
+            with_cfg(|c| {
+                c.autopilot = true;
+                c.auto_cleanup = true;
+                c.deep_clean = true;
+                c.fix_other_tools = true;
+                c.auto_updates = true;
+                c.unused_cleaner = true;
+                c.startup_watcher = true;
+                c.hog_watcher = true;
+                c.hog_auto_lower = true;
+                c.game_booster = true;
+                c.battery_mode = true;
+                c.wu_control = true;
+                c.visual_auto = true;
+                c.roblox_tune = true;
+                c.dns_auto = true;
+                c.organize_auto = true;
+                c.tidy_auto = true;
+                c.widgets_on = true;
+                c.theme_apps = true;
+                c.auto_theme = true;
+                if c.taskbar_style == "normal" {
+                    c.taskbar_style = "clear".into();
+                }
+            });
+            let c = cfg();
+            let wall = current_wall(&c);
+            if !wall.is_empty() {
+                let _ = look::apply(&wall, false);
+            }
+            "Autopilot, widgets, invisible taskbar and auto-organize all on".into()
+        }
+        _ => return Err("unknown step".into()),
+    })
 }

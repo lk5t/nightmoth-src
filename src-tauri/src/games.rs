@@ -284,6 +284,65 @@ pub fn end_boost(announce: bool) {
     }
 }
 
+/// Apps that go fullscreen but aren't games.
+const FULLSCREEN_NOT_GAMES: &[&str] = &[
+    "explorer", "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc", "vlc", "mpv", "mpc-hc", "potplayer", "wmplayer",
+    "video.ui", "microsoft.media.player", "netflix", "spotify", "obs64", "powerpnt", "nightmoth", "applicationframehost", "searchhost",
+    "startmenuexperiencehost", "lockapp", "shellexperiencehost", "textinputhost", "discord", "code", "mstsc", "vmware", "virtualbox",
+    "parsec", "moonlight", "photos", "acrobat", "winword", "excel", "teams", "zoom", "screenclippinghost", "snippingtool", "taskmgr",
+];
+
+/// The process whose window covers the whole screen right now (fullscreen or borderless).
+fn fullscreen_pid() -> Option<u32> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId};
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.is_null() {
+            return None;
+        }
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(h, &mut r) == 0 {
+            return None;
+        }
+        let mon = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(mon, &mut mi) == 0 {
+            return None;
+        }
+        let m = mi.rcMonitor;
+        if r.left > m.left || r.top > m.top || r.right < m.right || r.bottom < m.bottom {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, &mut pid);
+        (pid != 0).then_some(pid)
+    }
+}
+
+fn nice_name(exe: &str) -> String {
+    let stem = exe.trim_end_matches(".exe").trim_end_matches(".EXE");
+    let stem = stem.trim_end_matches("-Win64-Shipping").trim_end_matches("-win64-shipping").trim_end_matches("_dx12").trim_end_matches("64");
+    let mut out = String::new();
+    for (i, w) in stem.split(['_', '-']).filter(|w| !w.is_empty()).enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut c = w.chars();
+        if let Some(f) = c.next() {
+            out.extend(f.to_uppercase());
+            out.push_str(c.as_str());
+        }
+    }
+    if out.is_empty() {
+        exe.to_string()
+    } else {
+        out
+    }
+}
+
 /// Watches for games every few seconds.
 pub fn watcher() {
     // finish a boost left over from a crash
@@ -292,6 +351,7 @@ pub fn watcher() {
     }
     let mut libs = steam_libraries();
     let mut tick = 0u32;
+    let mut fs_seen: Option<(u32, std::time::Instant)> = None;
     loop {
         std::thread::sleep(Duration::from_secs(3));
         tick += 1;
@@ -330,6 +390,40 @@ pub fn watcher() {
         };
         if let Some((name, key, path, pid)) = found {
             start_boost(&name, &key, &path, pid);
+            fs_seen = None;
+            continue;
+        }
+        // not on any list: anything that stays fullscreen for 10+ seconds is treated as a game
+        match fullscreen_pid() {
+            Some(pid) => {
+                let info = {
+                    let mut sys = lock(&core().sys);
+                    sys.refresh_processes(ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]), true);
+                    sys.process(sysinfo::Pid::from_u32(pid)).map(|p| {
+                        (p.name().to_string_lossy().to_string(), p.exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default())
+                    })
+                };
+                let Some((exe, path)) = info else { continue };
+                let key = exe.to_lowercase();
+                let pl = path.to_lowercase();
+                if FULLSCREEN_NOT_GAMES.iter().any(|n| key.contains(n)) || NOT_GAMES.iter().any(|n| key.contains(n)) || pl.contains("\\windows\\") {
+                    fs_seen = None;
+                    continue;
+                }
+                if c.games.get(&key).map(|g| !g.boost).unwrap_or(false) {
+                    continue;
+                }
+                match fs_seen {
+                    Some((p, since)) if p == pid => {
+                        if since.elapsed() >= Duration::from_secs(10) {
+                            start_boost(&nice_name(&exe), &key, &path, pid);
+                            fs_seen = None;
+                        }
+                    }
+                    _ => fs_seen = Some((pid, std::time::Instant::now())),
+                }
+            }
+            None => fs_seen = None,
         }
     }
 }

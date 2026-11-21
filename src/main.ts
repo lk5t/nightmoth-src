@@ -201,7 +201,8 @@ PAGES.home = {
               <circle class="arc" id="arc" cx="100" cy="100" r="80" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="502.65" stroke-dashoffset="502.65"/></svg>
             <div class="center"><img src="/moth-logo.png" alt=""><b id="score">··</b><span>Health</span></div>
           </div>
-          <button class="btn primary big" id="optimize" style="width:100%;justify-content:center">Optimize now</button>
+          <button class="btn primary big" id="perfect" style="width:100%;justify-content:center">Make my PC perfect</button>
+          <button class="btn" id="optimize" style="width:100%;justify-content:center;margin-top:8px">Quick optimize</button>
         </div>
         <div class="wallcard" style="background-image:url('${ov.wallpaper_thumb ?? ""}')">
           <div class="shade"></div>
@@ -227,6 +228,9 @@ PAGES.home = {
 
       <div class="grid g2" style="margin-top:14px">
         <div class="card"><h3>What needs attention</h3><p class="sub">Updated every 10 minutes</p><ul class="issues" id="issues">${loading("Checking")}</ul></div>
+        <div class="card"><h3>Autopilot activity</h3><p class="sub">The latest things Nightmoth did on its own</p><div class="feed" id="feed">${loading()}</div></div>
+      </div>
+      <div class="grid g2" style="margin-top:14px">
         <div class="card"><h3>This week</h3><p class="sub">What Autopilot did for you</p>
           <div class="grid g2">
             <div class="stat"><div class="label">Freed</div><div class="value">${fmtBytes(s.freed_bytes)}</div></div>
@@ -238,6 +242,18 @@ PAGES.home = {
       </div>`;
 
     q("#golook").onclick = () => go("look");
+    q("#perfect").onclick = () => go("smart");
+    const feed = async () => {
+      const ch = await raw<Any[]>("changes_list").catch(() => []);
+      const box = document.getElementById("feed");
+      if (!box) return;
+      const items = ch.slice(0, 7);
+      box.innerHTML = items.length
+        ? items.map((e) => `<div class="fitem"><span class="badge ${e.module === "Autopilot" ? "red" : ""}">${esc(e.module)}</span><div><b>${esc(e.title)}</b><span>${ago(e.ts)}${e.detail ? " · " + esc(e.detail) : ""}</span></div></div>`).join("")
+        : `<div class="muted">Nothing yet — Autopilot acts when something needs doing.</div>`;
+    };
+    feed();
+    timers.push(window.setInterval(feed, 15000));
     const opt = q<HTMLButtonElement>("#optimize");
     opt.onclick = () =>
       busy(opt, async () => {
@@ -275,6 +291,67 @@ PAGES.home = {
         : `<li style="color:var(--text)">Nothing to fix — your PC is in great shape.</li>`;
     }
     loadHealth(false);
+  },
+};
+
+/* ================================================================ make my PC perfect */
+
+const SMART: [string, string, "engine" | "app"][] = [
+  ["restore", "Making a restore point", "engine"],
+  ["repair", "Repairing what other tools broke", "engine"],
+  ["cleanup", "Clearing junk", "engine"],
+  ["privacy", "Blocking ads & tracking in Windows", "engine"],
+  ["services", "Turning off useless background services", "engine"],
+  ["startup", "Making startup faster", "engine"],
+  ["power", "Setting up Game Mode, updates and visuals", "engine"],
+  ["dns", "Finding the fastest DNS", "engine"],
+  ["automation", "Switching on Autopilot, widgets and the invisible taskbar", "engine"],
+  ["organize", "Organizing your desktop apps", "app"],
+  ["roblox", "Tuning Roblox for your PC", "app"],
+];
+
+let smartRunning = false;
+
+PAGES.smart = {
+  title: "Make my PC perfect",
+  sub: "One click — every safe optimization, then Autopilot keeps it that way",
+  async render(el) {
+    el.innerHTML = `<div class="card panic"><div class="row between"><div><h3>Everything, done for you</h3>
+        <p class="sub" style="margin:0">Repairs, cleanup, privacy, startup, network and your desktop — then everything stays automatic. Nothing is uninstalled here, and every change can be undone from Safety.</p></div>
+        <button class="btn primary big" id="smartgo">${smartRunning ? "Working…" : "Start"}</button></div></div>
+      <div class="card" style="margin-top:14px"><div class="steps" id="steps">${SMART.map(([id, label]) => `<div class="step" data-step="${id}"><i></i><div><b>${label}</b><span></span></div></div>`).join("")}</div></div>`;
+    const go2 = q<HTMLButtonElement>("#smartgo");
+    go2.disabled = smartRunning;
+    go2.onclick = async () => {
+      if (smartRunning) return;
+      smartRunning = true;
+      go2.disabled = true;
+      go2.textContent = "Working…";
+      let done = 0;
+      for (const [id] of SMART) {
+        const row = document.querySelector<HTMLElement>(`[data-step="${id}"]`);
+        row?.classList.add("run");
+        let line = "";
+        try {
+          if (id === "organize") { const n = await raw<number>("organize_run"); line = n ? `${n} apps sorted into folders` : "Already organized"; }
+          else if (id === "roblox") { const r = await raw<Any>("roblox_apply"); line = `${r.fps} FPS cap · graphics ${r.quality}/10`; }
+          else line = await raw<string>("smart_step", { step: id });
+          done++;
+          row?.classList.replace("run", "ok");
+        } catch (e) {
+          line = String(e).includes("isn't installed") ? "Roblox not installed — skipped" : String(e);
+          row?.classList.replace("run", "skip");
+        }
+        const sp = row?.querySelector("span");
+        if (sp) sp.textContent = line;
+      }
+      smartRunning = false;
+      localStorage.setItem("nm-welcomed", "1");
+      go2.disabled = false;
+      go2.textContent = "Run again";
+      snack(`Done — ${done} of ${SMART.length} steps. Autopilot takes it from here.`);
+      refreshStatus();
+    };
   },
 };
 
@@ -1204,14 +1281,16 @@ function welcome() {
     <p>Pick any wallpaper and Nightmoth themes your whole PC around it. Then it lives in your tray and keeps everything fast on its own — cleaning junk, blocking startup bloat, boosting your games and removing apps you never use.</p>
     <p class="muted" style="font-size:12.5px">Every change is logged and can be undone from Safety.</p>
     <div class="row" style="justify-content:center;margin-top:24px;gap:10px">
-      <button class="btn primary big" id="w1">Pick a wallpaper</button>
-      <button class="btn big" id="w2">Optimize my PC</button>
+      <button class="btn primary big" id="w2">Make my PC perfect</button>
+      <button class="btn big" id="w1">Pick a wallpaper first</button>
       <button class="btn big ghost" id="w3">Skip</button></div></div>`;
   const done = () => localStorage.setItem("nm-welcomed", "1");
   q("#w1").onclick = () => { done(); go("look"); };
-  q("#w2").onclick = () => { done(); go("home"); setTimeout(() => q<HTMLButtonElement>("#optimize")?.click(), 600); };
+  q("#w2").onclick = () => { done(); go("smart"); setTimeout(() => q<HTMLButtonElement>("#smartgo")?.click(), 400); };
   q("#w3").onclick = () => { done(); go("home"); };
 }
+
+import("@tauri-apps/api/event").then(({ listen }) => listen<string>("open-page", (e) => { if (PAGES[e.payload]) go(e.payload); }));
 
 refreshStatus();
 invoke("ui_log", { msg: "main window ready" }).catch(() => {});
