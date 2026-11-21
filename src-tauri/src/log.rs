@@ -20,8 +20,17 @@ pub fn log(msg: &str) {
     if std::fs::metadata(&p).map(|m| m.len() > 512 * 1024).unwrap_or(false) {
         let _ = std::fs::remove_file(&p);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-        let _ = f.write_all(line.as_bytes());
+    let written = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| f.write_all(line.as_bytes())).is_ok();
+    // the engine's folder is admin-only: if this process can't write there (no real admin
+    // rights), keep the log where the app can still read it
+    if !written && role != "app" {
+        let fb = crate::win::user_dir().join("engine-fallback.log");
+        if std::fs::metadata(&fb).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+            let _ = std::fs::remove_file(&fb);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(fb) {
+            let _ = f.write_all(line.as_bytes());
+        }
     }
 }
 

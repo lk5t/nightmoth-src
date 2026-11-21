@@ -327,7 +327,7 @@ PAGES.engine = {
       refreshStatus();
       return;
     }
-    const details = `Nightmoth ${d.app_exe}\n\nError: ${d.error || "(none)"}\nEndpoint file: ${d.endpoint}\n\n--- Scheduled task ---\n${d.task}\n\n--- Engine log ---\n${d.engine_log}\n\n--- App log ---\n${d.app_log}`;
+    const details = `Nightmoth ${d.app_exe}\nAccount: ${d.account} · app has admin rights: ${d.app_admin_rights}\n\nError: ${d.error || "(none)"}\nSetup result: ${d.setup_result || "(setup hasn't run)"}\nEndpoint file: ${d.endpoint}\n\n--- Scheduled task ---\n${d.task}\n\n--- Engine log ---\n${d.engine_log || "(empty)"}\n\n--- Engine log (no-admin fallback) ---\n${d.engine_fallback_log || "(empty)"}\n\n--- App log ---\n${d.app_log}`;
     el.innerHTML = `<div class="card panic"><h3>Nightmoth's engine isn't running</h3>
         <p class="sub">${esc(d.error || "It didn't answer. Press Try again — Windows will ask for admin permission once.")}</p>
         <div class="row"><button class="btn primary" id="eretry">Try again</button><button class="btn" id="ecopy">Copy details</button></div></div>

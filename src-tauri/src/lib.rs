@@ -69,13 +69,21 @@ pub fn main_entry() {
         win::set_elevated_role();
         log::set_role("setup");
         let sid = args.iter().skip_while(|a| *a != "--setup-engine").nth(1).map(|s| s.as_str());
-        match ipc::setup_engine(sid) {
-            Ok(_) => log::log("engine task registered"),
+        log::log(&format!("setup {} running · admin rights: {}", env!("CARGO_PKG_VERSION"), win::is_elevated()));
+        // never a message box here: nobody may see it, and it would keep setup waiting forever.
+        // The result goes where the app can read it and show it.
+        let result = match ipc::setup_engine(sid) {
+            Ok(_) => {
+                log::log("engine task registered");
+                "ok".to_string()
+            }
             Err(e) => {
                 log::log(&format!("engine task setup failed: {e}"));
-                log::error_box(&format!("Nightmoth couldn't set up its background engine:\n\n{e}"));
+                format!("Setting up the engine task failed: {}", e.lines().next().unwrap_or(&e))
             }
-        }
+        };
+        let result = if win::is_elevated() { result } else { format!("Setup didn't get admin rights. {result}") };
+        let _ = std::fs::write(win::user_dir().join("setup-result.txt"), result);
     } else {
         log::set_role("app");
         run_app();
@@ -85,7 +93,11 @@ pub fn main_entry() {
 // ================================================================== engine
 
 fn run_engine() {
-    log::log(&format!("engine {} starting", env!("CARGO_PKG_VERSION")));
+    let admin = win::is_elevated();
+    log::log(&format!("engine {} starting · admin rights: {admin}", env!("CARGO_PKG_VERSION")));
+    if !admin {
+        log::log("engine is running WITHOUT admin rights — it can't make changes (usually: the Windows account isn't an administrator)");
+    }
     if ipc::engine_alive() {
         log::log("engine already running, exiting");
         return;

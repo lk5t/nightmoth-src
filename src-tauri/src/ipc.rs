@@ -273,8 +273,24 @@ fn tail(path: &std::path::Path, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+fn is_admin_account() -> bool {
+    // member of Administrators (even when not elevated right now)
+    win::run("whoami.exe", &["/groups"]).map(|o| o.contains("S-1-5-32-544")).unwrap_or(false)
+}
+
 /// Why the engine can't be reached, in words.
 fn diagnose() -> String {
+    let setup = std::fs::read_to_string(win::user_dir().join("setup-result.txt")).unwrap_or_default();
+    let fallback = tail(&win::user_dir().join("engine-fallback.log"), 20);
+    if !is_admin_account() {
+        return "Your Windows account isn't an administrator, so the engine can't get the rights it needs. Sign in with an administrator account (or ask whoever set up this PC to make yours one), then press Try again.".into();
+    }
+    if fallback.contains("WITHOUT admin rights") || setup.starts_with("Setup didn't get admin rights") {
+        return "The engine started without admin rights. Press Try again and click Yes on the Windows prompt.".into();
+    }
+    if !setup.trim().is_empty() && setup.trim() != "ok" {
+        return setup.trim().to_string();
+    }
     let elog = tail(&win::engine_dir().join("nightmoth.log"), 60);
     let last_lines: Vec<&str> = elog.lines().rev().take(25).collect();
     if let Some(l) = last_lines.iter().find(|l| l.contains("refused a connection")) {
@@ -359,6 +375,10 @@ pub fn diagnostics() -> serde_json::Value {
         "app_exe": std::env::current_exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
         "task": task.lines().filter(|l| ["TaskName", "Status", "Last Run Time", "Last Result", "Task To Run", "Run As User"].iter().any(|k| l.trim_start().starts_with(k))).collect::<Vec<_>>().join("\n"),
         "engine_log": tail(&win::engine_dir().join("nightmoth.log"), 40),
+        "engine_fallback_log": tail(&win::user_dir().join("engine-fallback.log"), 20),
+        "setup_result": std::fs::read_to_string(win::user_dir().join("setup-result.txt")).unwrap_or_default(),
+        "account": if is_admin_account() { "administrator" } else { "standard user" },
+        "app_admin_rights": win::is_elevated(),
         "app_log": tail(&win::user_dir().join("nightmoth.log"), 40),
     })
 }
