@@ -141,7 +141,8 @@ fn inject(dll: &std::path::Path, pid: u32, n: u32) -> Result<(), String> {
         }
         let f = GetProcAddress(h, b"InitializeXamlDiagnosticsEx\0".as_ptr()).ok_or("no InitializeXamlDiagnosticsEx")?;
         let f: InitXamlDiag = std::mem::transmute(f);
-        let endpoint = wide(&format!("NightmothTaskbar{pid}x{n}"));
+        // the connection name TranslucentTB uses; a fresh number for every attempt
+        let endpoint = wide(&format!("VisualDiagConnection{n}"));
         let path = wide(&dll.to_string_lossy());
         let hr = f(endpoint.as_ptr(), pid, std::ptr::null(), path.as_ptr(), CLSID_TAP, std::ptr::null());
         if hr < 0 {
@@ -151,52 +152,104 @@ fn inject(dll: &std::path::Path, pid: u32, n: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// What the Windows 11 helper is doing, shown on the Look page.
+static STATUS: Mutex<String> = Mutex::new(String::new());
+
+fn status(msg: &str) {
+    let mut s = lock(&STATUS);
+    if *s != msg {
+        crate::log::log(&format!("taskbar helper: {msg}"));
+        *s = msg.to_string();
+    }
+}
+
+pub fn helper_status() -> String {
+    let s = lock(&STATUS).clone();
+    if s.is_empty() {
+        "starting".into()
+    } else {
+        s
+    }
+}
+
 /// Keeps the helper loaded in Explorer (it's reloaded when Explorer restarts) while the
-/// taskbar should be clear. If Explorer restarts right after a load twice, it stops for good.
+/// taskbar should be clear. Explorer may not have its taskbar ready yet, so a failed load
+/// is retried a few times. If Explorer restarts right after a load twice, it stops for good.
 fn helper_loop(dll: std::path::PathBuf) {
-    if windows_build() < 22000 || !dll.exists() {
+    if windows_build() < 22000 {
+        status("not needed on Windows 10 — the basic effect makes it clear");
+        return;
+    }
+    if !dll.exists() {
+        status("helper file missing — reinstall Nightmoth");
         return;
     }
     std::thread::spawn(move || {
-        let mut injected_pid = 0u32;
-        let mut injected_at = std::time::Instant::now();
-        let mut attempts = 0u32;
+        let mut loaded_pid = 0u32;
+        let mut loaded_at = std::time::Instant::now();
+        let mut tries_pid = 0u32;
+        let mut tries = 0u32;
+        let mut attempt = 0u32;
         loop {
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(Duration::from_secs(3));
             let (style, _) = lock(&WANTED).clone();
             let want = style == "clear" || style == "tint";
             set_flag(want);
             if !want {
+                if loaded_pid == 0 {
+                    status("off — taskbar set to Windows default");
+                }
                 continue;
             }
             let Ok(c) = crate::ipc::call_quiet("get_config", serde_json::json!({})) else { continue };
-            if !c["taskbar_helper"].as_bool().unwrap_or(true) || c["taskbar_helper_crashes"].as_u64().unwrap_or(0) >= 2 {
+            if !c["taskbar_helper"].as_bool().unwrap_or(true) {
+                status("switched off");
+                continue;
+            }
+            if c["taskbar_helper_crashes"].as_u64().unwrap_or(0) >= 2 {
+                status("paused — Explorer restarted right after it loaded");
                 continue;
             }
             let pid = explorer_pid();
-            if pid == 0 || pid == injected_pid {
+            if pid == 0 {
+                status("waiting for the taskbar");
+                continue;
+            }
+            if pid == loaded_pid {
                 continue;
             }
             // Explorer was replaced soon after we loaded the helper: count it as a crash
-            if injected_pid != 0 && injected_at.elapsed() < Duration::from_secs(90) {
+            if loaded_pid != 0 && loaded_at.elapsed() < Duration::from_secs(90) {
                 let n = c["taskbar_helper_crashes"].as_u64().unwrap_or(0) + 1;
                 let _ = crate::ipc::call_quiet("set_config", serde_json::json!({ "patch": { "taskbar_helper_crashes": n } }));
-                crate::log::log(&format!("taskbar helper: Explorer restarted right after loading ({n})"));
                 if n >= 2 {
                     crate::ui_toast::local("Invisible taskbar paused", "Explorer didn't like the helper on this PC — using the basic effect");
-                    injected_pid = pid;
+                    loaded_pid = pid;
                     continue;
                 }
             }
-            // give a fresh Explorer time to build its taskbar
-            std::thread::sleep(Duration::from_secs(4));
-            attempts += 1;
-            match inject(&dll, pid, attempts) {
-                Ok(_) => crate::log::log("taskbar helper loaded"),
-                Err(e) => crate::log::log(&format!("taskbar helper not loaded: {e}")),
+            if pid != tries_pid {
+                tries_pid = pid;
+                tries = 0;
+                // a fresh Explorer needs a moment to build its taskbar
+                std::thread::sleep(Duration::from_secs(5));
             }
-            injected_pid = pid;
-            injected_at = std::time::Instant::now();
+            if tries >= 6 {
+                continue; // gave up on this Explorer; tries again after it restarts
+            }
+            tries += 1;
+            attempt += 1;
+            match inject(&dll, pid, attempt) {
+                Ok(_) => {
+                    status("active — taskbar background hidden");
+                    loaded_pid = pid;
+                    loaded_at = std::time::Instant::now();
+                }
+                Err(e) => {
+                    status(&format!("couldn't load into Explorer ({e}), try {tries} of 6"));
+                    std::thread::sleep(Duration::from_secs(10));
+                }
+            }
         }
     });
 }

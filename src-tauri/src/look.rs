@@ -641,7 +641,19 @@ pub fn desktop_set(key: &str, value: &serde_json::Value) -> Result<(), String> {
                 _ => "normal",
             };
             with_cfg(|c| c.taskbar_style = style.into());
-            // the app re-applies it continuously; nothing to record
+            // whatever Windows still draws should blend in: dark taskbar on a dark wallpaper
+            if style != "normal" {
+                let c = cfg();
+                let wall = if c.current_wallpaper.is_empty() { win::current_wallpaper() } else { c.current_wallpaper.clone() };
+                let dark = c.looks.get(&wall).map(|l| l.dark).unwrap_or(true);
+                if dark {
+                    if let Ok(Some(ch)) = changelog::reg(Hive::HKCU, PERSONALIZE, "SystemUsesLightTheme", RegVal::Dword(0)) {
+                        win::broadcast("ImmersiveColorSet");
+                        changelog::record("Look", "Dark taskbar for the invisible look", "", ch);
+                    }
+                }
+            }
+            // the app re-applies the effect continuously
             return Ok(());
         }
         "icons" => {

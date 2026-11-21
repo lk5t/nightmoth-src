@@ -47,7 +47,7 @@ function snack(msg: string, err = false) {
 /** Commands handled by the app itself; everything else runs in the elevated engine. */
 const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo", "organize_preview", "organize_run", "organize_undo", "organize_set_kind",
   "storage_scan", "storage_recycle", "roblox_state", "roblox_apply", "roblox_restore", "monitors_list", "monitor_set",
-  "look_export_file", "look_import_file", "cursor_set", "theme_apps_now"]);
+  "look_export_file", "look_import_file", "cursor_set", "theme_apps_now", "taskbar_status"]);
 
 function raw<T = Any>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return LOCAL.has(cmd) ? invoke<T>(cmd, args) : invoke<T>("engine", { cmd, args: args ?? {} });
@@ -375,7 +375,7 @@ PAGES.look = {
         <div class="preset" data-preset="void"><b>Void</b><span>Black-red wallpaper, invisible taskbar, empty desktop</span></div>
         <div class="preset" data-preset="neon"><b>Neon Night</b><span>Synthwave wallpaper, tinted glass taskbar, no icons</span></div>
         <div class="preset" data-preset="clean"><b>Clean</b><span>Keep your wallpaper, invisible taskbar, no clutter</span></div>
-        <div class="preset" data-preset="default"><b>Windows default</b><span>Normal taskbar and icons back</span></div>
+        <div class="preset" data-preset="default"><b>Windows default</b><span>Solid Windows taskbar and icons back (turns invisible taskbar off)</span></div>
       </div>
 
       <div class="section-title"><h2>Taskbar</h2><span class="muted">Stays put — only the bar itself changes</span></div>
@@ -384,7 +384,7 @@ PAGES.look = {
            ["tint", "Tinted glass", "A faint wash of your wallpaper's accent behind the icons"],
            ["normal", "Windows default", "The normal solid taskbar"]].map(([id, n, desc]) => `
           <div data-tb="${id}" class="${d.taskbar === id ? "on" : ""}"><div class="tbprev ${id}"><i></i><i></i><i></i><i></i></div><b>${n}</b><span>${desc}</span></div>`).join("")}
-      </div></div>
+      </div><p class="sub" style="margin:12px 0 0">Invisible taskbar helper: <span id="tbstatus" class="mono">checking…</span></p></div>
 
       <div class="section-title"><h2>Desktop widgets</h2><span class="muted">Coloured and placed from your wallpaper</span></div>
       <div class="card"><div class="list">
@@ -496,6 +496,14 @@ PAGES.look = {
         snack(t.dataset.tb === "clear" ? "Taskbar is now invisible" : t.dataset.tb === "tint" ? "Tinted glass taskbar" : "Normal taskbar");
       };
     });
+
+    const tbStatus = async () => {
+      const t = await raw<string>("taskbar_status").catch(() => "");
+      const e2 = document.getElementById("tbstatus");
+      if (e2 && t) e2.textContent = t;
+    };
+    tbStatus();
+    timers.push(window.setInterval(tbStatus, 3000));
 
     let kinds: string[] = [...(c.widgets || [])];
     qa<HTMLButtonElement>("[data-wk]").forEach((b) => {

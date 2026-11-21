@@ -399,6 +399,11 @@ fn cursor_set(on: bool, accent: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn taskbar_status() -> String {
+    taskbar::helper_status()
+}
+
+#[tauri::command]
 fn theme_apps_now(accent: String) -> usize {
     apptheme::theme_apps(&accent)
 }
@@ -523,6 +528,7 @@ fn run_app() {
             look_import_file,
             cursor_set,
             theme_apps_now,
+            taskbar_status,
             autostart_get,
             autostart_set,
             quit_app,
