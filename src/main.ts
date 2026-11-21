@@ -47,7 +47,7 @@ function snack(msg: string, err = false) {
 /** Commands handled by the app itself; everything else runs in the elevated engine. */
 const LOCAL = new Set(["ui_log", "autostart_get", "autostart_set", "quit_app", "toast_done", "toast_action", "tidy_preview", "tidy_run", "tidy_undo", "organize_preview", "organize_run", "organize_undo", "organize_set_kind",
   "storage_scan", "storage_recycle", "roblox_state", "roblox_apply", "roblox_restore", "monitors_list", "monitor_set",
-  "look_export_file", "look_import_file", "cursor_set", "theme_apps_now", "taskbar_status"]);
+  "look_export_file", "look_import_file", "cursor_set", "theme_apps_now", "taskbar_status", "engine_diagnostics", "engine_retry"]);
 
 function raw<T = Any>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return LOCAL.has(cmd) ? invoke<T>(cmd, args) : invoke<T>("engine", { cmd, args: args ?? {} });
@@ -166,7 +166,11 @@ function go(name: string) {
   content.style.animation = "";
   content.innerHTML = loading(engineUp ? "Loading" : "Starting the Nightmoth engine");
   content.scrollTop = 0;
-  p.render(content).catch((e) => (content.innerHTML = `<div class="empty">Something went wrong: ${esc(e)}</div>`));
+  p.render(content).catch((e) => {
+    // the engine can't be reached: show why, instead of a page that never loads
+    if (!engineUp && name !== "engine") go("engine");
+    else content.innerHTML = `<div class="empty">Something went wrong: ${esc(e)}</div>`;
+  });
 }
 
 async function refreshStatus() {
@@ -180,7 +184,10 @@ async function refreshStatus() {
       ? `<span class="dot on"></span>Autopilot is on`
       : `<span class="dot"></span>Autopilot paused`;
   } catch {
-    q("#status").innerHTML = `<span class="dot"></span>Engine starting…`;
+    engineUp = false;
+    q("#status").innerHTML = `<span class="dot"></span>Engine not running · <a id="enginelink" style="color:var(--red-text);cursor:pointer">details</a>`;
+    const l = document.getElementById("enginelink");
+    if (l) l.onclick = () => go("engine");
   }
 }
 setInterval(refreshStatus, 5000);
@@ -291,6 +298,44 @@ PAGES.home = {
         : `<li style="color:var(--text)">Nothing to fix — your PC is in great shape.</li>`;
     }
     loadHealth(false);
+  },
+};
+
+/* ================================================================ engine problems */
+
+PAGES.engine = {
+  title: "Engine",
+  sub: "The part of Nightmoth that makes changes with admin rights",
+  async render(el) {
+    const d = await invoke<Any>("engine_diagnostics");
+    if (d.alive) {
+      el.innerHTML = `<div class="card"><h3>The engine is running</h3><p class="sub" style="margin:0">Everything is working.</p></div>`;
+      engineUp = true;
+      refreshStatus();
+      return;
+    }
+    const details = `Nightmoth ${d.app_exe}\n\nError: ${d.error || "(none)"}\nEndpoint file: ${d.endpoint}\n\n--- Scheduled task ---\n${d.task}\n\n--- Engine log ---\n${d.engine_log}\n\n--- App log ---\n${d.app_log}`;
+    el.innerHTML = `<div class="card panic"><h3>Nightmoth's engine isn't running</h3>
+        <p class="sub">${esc(d.error || "It didn't answer. Press Try again — Windows will ask for admin permission once.")}</p>
+        <div class="row"><button class="btn primary" id="eretry">Try again</button><button class="btn" id="ecopy">Copy details</button></div></div>
+      <div class="section-title"><h2>Details</h2><span class="muted">Send these if it keeps happening</span></div>
+      <div class="card"><pre class="diag">${esc(details)}</pre></div>`;
+    const retry = q<HTMLButtonElement>("#eretry");
+    retry.onclick = () => busy(retry, async () => {
+      try {
+        await invoke("engine_retry");
+        engineUp = true;
+        snack("Engine running");
+        refreshStatus();
+        go("home");
+      } catch (e) {
+        snack(String(e), true);
+        go("engine");
+      }
+    });
+    q("#ecopy").onclick = async () => {
+      try { await navigator.clipboard.writeText(details); snack("Copied"); } catch { snack("Couldn't copy — select the text instead", true); }
+    };
   },
 };
 

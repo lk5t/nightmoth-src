@@ -110,12 +110,30 @@ fn pid_exe(pid: u32) -> Option<String> {
 }
 
 /// Is the client Nightmoth itself (the same exe file as this engine)?
+/// Paths are compared in their full, real form, so short names (PROGRA~1), letter case
+/// or a different way of writing the same path don't lock the real app out.
 fn trusted_client(peer: SocketAddr, server_port: u16) -> bool {
     let Ok(me) = std::env::current_exe() else { return false };
-    let me = me.to_string_lossy().to_lowercase();
-    match peer_pid(peer, server_port).and_then(pid_exe) {
-        Some(exe) => exe.to_lowercase() == me,
-        None => false,
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).map(|c| c.to_string_lossy().to_lowercase()).unwrap_or_else(|_| p.to_string_lossy().to_lowercase());
+    let mine = real(&me);
+    let Some(pid) = peer_pid(peer, server_port) else {
+        log(&format!("engine: couldn't tell which program connected (port {})", peer.port()));
+        return false;
+    };
+    match pid_exe(pid) {
+        Some(exe) => {
+            let theirs = real(std::path::Path::new(&exe));
+            if theirs == mine {
+                true
+            } else {
+                log(&format!("engine: refused a connection from another program: {exe} (engine is {})", me.to_string_lossy()));
+                false
+            }
+        }
+        None => {
+            log(&format!("engine: couldn't read the path of process {pid}"));
+            false
+        }
     }
 }
 
@@ -157,7 +175,6 @@ fn handle(stream: TcpStream, token: &str, port: u16, dispatch: fn(&str, &Value) 
         return;
     }
     if !trusted_client(peer, port) {
-        log(&format!("engine: refused a connection from another program (port {})", peer.port()));
         return;
     }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -227,38 +244,94 @@ pub fn call_quiet(cmd: &str, args: Value) -> Result<Value, String> {
 }
 
 static STARTING: Mutex<()> = Mutex::new(());
+/// The admin prompt is shown at most once per app run.
+static PROMPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
-/// Start the engine and wait until it answers.
+/// "Try again" from the diagnostics screen: allow one more admin prompt.
+pub fn allow_retry() {
+    PROMPTED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn last_error() -> String {
+    LAST_ERROR.lock().map(|e| e.clone()).unwrap_or_default()
+}
+
+/// The Windows account ID (SID) of whoever runs the app, so the engine task is set up for
+/// exactly this account — names can be ambiguous (Microsoft / work accounts).
+fn current_sid() -> String {
+    win::run("whoami.exe", &["/user", "/fo", "csv", "/nh"])
+        .ok()
+        .and_then(|o| o.split('"').filter(|x| x.starts_with("S-1-")).next().map(String::from))
+        .unwrap_or_default()
+}
+
+fn tail(path: &std::path::Path, n: usize) -> String {
+    let s = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = s.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// Why the engine can't be reached, in words.
+fn diagnose() -> String {
+    let elog = tail(&win::engine_dir().join("nightmoth.log"), 60);
+    let last_lines: Vec<&str> = elog.lines().rev().take(25).collect();
+    if let Some(l) = last_lines.iter().find(|l| l.contains("refused a connection")) {
+        return format!("The engine is running but didn't recognise the app ({}). Reinstall Nightmoth into Program Files and start it from the Start menu.", l.split("] ").nth(1).unwrap_or(l));
+    }
+    if let Some(l) = last_lines.iter().find(|l| l.contains("task setup failed") || l.contains("PANIC")) {
+        return format!("The engine couldn't start: {}", l.split("] ").nth(1).unwrap_or(l));
+    }
+    if !elog.contains("engine ready") {
+        return "The engine never started. Your antivirus may have blocked it — allow Nightmoth, then press Try again.".into();
+    }
+    "The engine started but the app can't reach it. Press Try again; if it keeps happening, copy the details and send them.".into()
+}
+
+/// Start the engine and wait until it answers. At most one admin prompt per app run.
 pub fn ensure_engine() -> Result<(), String> {
     let _guard = STARTING.lock().unwrap_or_else(|e| e.into_inner());
     if engine_alive() {
         return Ok(());
     }
     log("app: starting engine via scheduled task");
-    if win::run("schtasks.exe", &["/Run", "/TN", TASK]).is_ok() && wait_alive(Duration::from_secs(12)) {
+    if win::run("schtasks.exe", &["/Run", "/TN", TASK]).is_ok() && wait_alive(Duration::from_secs(20)) {
         return Ok(());
     }
-    // task missing or broken: set it up (one UAC prompt), then start it
-    log("app: setting up engine task (UAC)");
-    match run_elevated("--setup-engine") {
-        Ok(_) => {
-            if win::run("schtasks.exe", &["/Run", "/TN", TASK]).is_ok() && wait_alive(Duration::from_secs(15)) {
-                return Ok(());
-            }
-        }
-        Err(e) => {
-            log(&format!("app: setup declined/failed: {e}"));
-            return Err("Nightmoth needs admin permission once to set up its engine. Click Yes on the Windows prompt (open Nightmoth again to retry).".into());
-        }
+    if PROMPTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let e = last_error();
+        return Err(if e.is_empty() { "The Nightmoth engine isn't running".into() } else { e });
     }
-    // last resort: start the engine directly (UAC prompt)
-    log("app: starting engine directly (UAC)");
-    let _ = run_elevated_nowait("--engine");
-    if wait_alive(Duration::from_secs(20)) {
-        Ok(())
-    } else {
-        Err("The Nightmoth engine didn't start. Details are in %APPDATA%\\Nightmoth\\nightmoth.log".into())
+    // one admin prompt: registers the engine task for this account AND starts the engine
+    let sid = current_sid();
+    log(&format!("app: setting up the engine (one admin prompt) for {sid}"));
+    if let Err(e) = run_elevated(&format!("--setup-engine {sid}")) {
+        log(&format!("app: setup declined/failed: {e}"));
+        let msg = "Nightmoth needs admin permission once to set up its engine. Press Try again and click Yes on the Windows prompt.".to_string();
+        *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
+        return Err(msg);
     }
+    if wait_alive(Duration::from_secs(40)) {
+        return Ok(());
+    }
+    let msg = diagnose();
+    log(&format!("app: engine unreachable: {msg}"));
+    *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
+    Err(msg)
+}
+
+/// Everything useful for figuring out a broken engine, for the diagnostics screen.
+pub fn diagnostics() -> serde_json::Value {
+    let task = win::run("schtasks.exe", &["/Query", "/TN", TASK, "/V", "/FO", "LIST"]).unwrap_or_else(|e| format!("not found: {e}"));
+    json!({
+        "error": last_error(),
+        "alive": engine_alive(),
+        "endpoint": endpoint_path().exists(),
+        "app_exe": std::env::current_exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
+        "task": task.lines().filter(|l| ["TaskName", "Status", "Last Run Time", "Last Result", "Task To Run", "Run As User"].iter().any(|k| l.trim_start().starts_with(k))).collect::<Vec<_>>().join("\n"),
+        "engine_log": tail(&win::engine_dir().join("nightmoth.log"), 40),
+        "app_log": tail(&win::user_dir().join("nightmoth.log"), 40),
+    })
 }
 
 fn wait_alive(max: Duration) -> bool {
@@ -305,20 +378,38 @@ fn run_elevated(arg: &str) -> Result<(), String> {
     shell_runas(arg, true)
 }
 
-fn run_elevated_nowait(arg: &str) -> Result<(), String> {
-    shell_runas(arg, false)
-}
 
-/// `nightmoth.exe --setup-engine` (elevated): create the scheduled task that runs the engine elevated.
-pub fn setup_engine() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = win::ps_quote(&exe.to_string_lossy());
+/// `nightmoth.exe --setup-engine <SID>` (elevated, one prompt): create the scheduled task
+/// that runs the engine elevated at logon for this account, then start the engine now.
+pub fn setup_engine(sid: Option<&str>) -> Result<(), String> {
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = win::ps_quote(&exe_path.to_string_lossy());
+    let user = match sid {
+        Some(s) if s.starts_with("S-1-") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => format!("'{s}'"),
+        _ => "\"$env:USERDOMAIN\\$env:USERNAME\"".to_string(),
+    };
     let script = format!(
         "Unregister-ScheduledTask -TaskName 'Nightmoth' -Confirm:$false -ErrorAction SilentlyContinue; \
          $a = New-ScheduledTaskAction -Execute {exe} -Argument '--engine'; \
-         $p = New-ScheduledTaskPrincipal -UserId \"$env:USERDOMAIN\\$env:USERNAME\" -LogonType Interactive -RunLevel Highest; \
+         $p = New-ScheduledTaskPrincipal -UserId {user} -LogonType Interactive -RunLevel Highest; \
          $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 5; \
          Register-ScheduledTask -TaskName '{TASK}' -Action $a -Principal $p -Settings $s -Force | Out-Null"
     );
-    win::ps(&script).map(|_| ())
+    let registered = win::ps(&script);
+    if let Err(e) = &registered {
+        log(&format!("engine task setup failed: {e}"));
+    }
+    // start the engine right away from this elevated process (works even if the task couldn't be made)
+    if !engine_alive() {
+        use std::os::windows::process::CommandExt;
+        let spawned = std::process::Command::new(&exe_path)
+            .arg("--engine")
+            .creation_flags(win::CREATE_NO_WINDOW | 0x0000_0008 /* DETACHED_PROCESS */)
+            .spawn();
+        match spawned {
+            Ok(_) => log("engine started by setup"),
+            Err(e) => log(&format!("engine start by setup failed: {e}")),
+        }
+    }
+    registered.map(|_| ())
 }

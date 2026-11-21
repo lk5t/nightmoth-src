@@ -68,7 +68,8 @@ pub fn main_entry() {
     } else if args.iter().any(|a| a == "--setup-engine") {
         win::set_elevated_role();
         log::set_role("setup");
-        match ipc::setup_engine() {
+        let sid = args.iter().skip_while(|a| *a != "--setup-engine").nth(1).map(|s| s.as_str());
+        match ipc::setup_engine(sid) {
             Ok(_) => log::log("engine task registered"),
             Err(e) => {
                 log::log(&format!("engine task setup failed: {e}"));
@@ -439,6 +440,18 @@ fn cursor_set(on: bool, accent: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn engine_diagnostics() -> Value {
+    tauri::async_runtime::spawn_blocking(ipc::diagnostics).await.unwrap_or(Value::Null)
+}
+
+/// "Try again": one more admin prompt allowed, then start the engine.
+#[tauri::command]
+async fn engine_retry() -> Result<(), String> {
+    ipc::allow_retry();
+    tauri::async_runtime::spawn_blocking(ipc::ensure_engine).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn taskbar_status() -> String {
     taskbar::helper_status()
 }
@@ -569,6 +582,8 @@ fn run_app() {
             cursor_set,
             theme_apps_now,
             taskbar_status,
+            engine_diagnostics,
+            engine_retry,
             autostart_get,
             autostart_set,
             quit_app,
