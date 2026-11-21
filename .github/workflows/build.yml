@@ -40,6 +40,7 @@ jobs:
 
       # Install the built installer and start the app to make sure it really opens.
       - name: Smoke test (install + launch)
+        timeout-minutes: 8
         shell: pwsh
         env:
           NIGHTMOTH_NO_DIALOG: "1"
@@ -51,8 +52,9 @@ jobs:
           # Run it like a real PC does: as a normal (non-admin) user, so the engine has to be set up
           # through the admin prompt. On this unattended machine the prompt is auto-approved.
           reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f | Out-Null
-          Start-Process runas.exe -ArgumentList "/trustlevel:0x20000", "`"$($exe.FullName)`"" -Wait
-          Start-Sleep -Seconds 3
+          # (no -Wait: PowerShell 7 would wait for Nightmoth itself to exit)
+          Start-Process runas.exe -ArgumentList "/trustlevel:0x20000", "`"$($exe.FullName)`""
+          Start-Sleep -Seconds 5
           $p = Get-Process nightmoth -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
           if (-not $p) { Write-Host "runas didn't start it; starting normally"; $p = Start-Process $exe.FullName -PassThru }
           # The runner is an admin account, and WebView2 is slow to start elevated (20-60 s),
