@@ -527,3 +527,128 @@ pub fn reg_delete_tree(h: Hive, path: &str) -> Result<(), String> {
         Err(e) => Err(e.to_string()),
     }
 }
+
+// ---------------------------------------------------------------- stubborn things
+
+/// Run a command line through cmd.exe, but give up after `secs` (an uninstaller that
+/// opened a window nobody sees would otherwise wait forever). Kills the whole tree.
+pub fn run_cmdline_timeout(line: &str, secs: u64) -> Result<i32, String> {
+    let mut child = Command::new("cmd.exe")
+        .raw_arg(format!("/C \"{}\"", line))
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Ok(st.code().unwrap_or(-1)),
+            Ok(None) if start.elapsed().as_secs() >= secs => {
+                let _ = run("taskkill.exe", &["/PID", &child.id().to_string(), "/T", "/F"]);
+                return Err("took too long".into());
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Remove junctions/symlinks inside a folder (the links only, never what they point to),
+/// so nothing below can lead the delete — or ownership changes — anywhere else.
+fn strip_links(p: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(p) else { return };
+    for e in rd.filter_map(|e| e.ok()) {
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() {
+            let _ = std::fs::remove_dir(e.path());
+            let _ = std::fs::remove_file(e.path());
+        } else if ft.is_dir() {
+            strip_links(&e.path());
+        }
+    }
+}
+
+fn delete_on_reboot(p: &std::path::Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT};
+    let w = wide(&p.to_string_lossy());
+    unsafe { MoveFileExW(w.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) != 0 }
+}
+
+fn try_remove(p: &std::path::Path) {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => {
+            let _ = std::fs::remove_dir(p);
+            let _ = std::fs::remove_file(p);
+        }
+        Ok(m) if m.is_dir() => {
+            let _ = std::fs::remove_dir_all(p);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(p);
+        }
+        Err(_) => {}
+    }
+}
+
+/// Delete a file or folder whatever it takes:
+/// 1. normal delete → 2. clear read-only/hidden/system flags → 3. take ownership and grant
+/// admins full control (engine only) → 4. whatever is still locked by a running program is
+/// deleted at the next restart. Returns true if it's gone or scheduled.
+pub fn force_delete(p: &std::path::Path) -> bool {
+    try_remove(p);
+    if !p.exists() {
+        return true;
+    }
+    let is_dir = p.is_dir();
+    if is_dir {
+        strip_links(p);
+    }
+    let s = p.to_string_lossy().to_string();
+    if is_dir {
+        let _ = run("attrib.exe", &["-r", "-s", "-h", &format!("{s}\\*"), "/s", "/d"]);
+    }
+    let _ = run("attrib.exe", &["-r", "-s", "-h", &s]);
+    try_remove(p);
+    if !p.exists() {
+        return true;
+    }
+    if ELEVATED_ROLE.load(std::sync::atomic::Ordering::Relaxed) {
+        if is_dir {
+            let _ = run("takeown.exe", &["/F", &s, "/R", "/A", "/D", "Y"]);
+            let _ = run("icacls.exe", &[&s, "/grant", "*S-1-5-32-544:F", "/T", "/C", "/Q"]);
+        } else {
+            let _ = run("takeown.exe", &["/F", &s, "/A"]);
+            let _ = run("icacls.exe", &[&s, "/grant", "*S-1-5-32-544:F", "/C", "/Q"]);
+        }
+        try_remove(p);
+        if !p.exists() {
+            return true;
+        }
+    }
+    // still locked: files first, then folders deepest-first, at the next restart
+    if !is_dir {
+        return delete_on_reboot(p);
+    }
+    let mut files = vec![];
+    let mut dirs = vec![p.to_path_buf()];
+    let mut i = 0;
+    while i < dirs.len() {
+        if let Ok(rd) = std::fs::read_dir(&dirs[i]) {
+            for e in rd.filter_map(|e| e.ok()) {
+                match e.file_type() {
+                    Ok(ft) if ft.is_dir() && !ft.is_symlink() => dirs.push(e.path()),
+                    Ok(_) => files.push(e.path()),
+                    Err(_) => {}
+                }
+            }
+        }
+        i += 1;
+    }
+    let mut any = false;
+    for f in &files {
+        any |= delete_on_reboot(f);
+    }
+    for d in dirs.iter().rev() {
+        any |= delete_on_reboot(d);
+    }
+    any
+}

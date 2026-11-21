@@ -82,8 +82,8 @@ fn remove(p: &Path) -> u64 {
     let size = size_of(p);
     let ok = match std::fs::symlink_metadata(p) {
         Ok(m) if m.file_type().is_symlink() => false,
-        Ok(m) if m.is_dir() => std::fs::remove_dir_all(p).is_ok() || !p.exists(),
-        Ok(_) => std::fs::remove_file(p).is_ok(),
+        // every way there is: normal delete, then flags/ownership, then at the next restart
+        Ok(_) => win::force_delete(p) && !p.exists(),
         Err(_) => false,
     };
     if ok {
@@ -384,6 +384,60 @@ fn windows_old() -> Option<PathBuf> {
     (real_dir(&p) && older_than(&p, 10)).then_some(p)
 }
 
+/// Shortcuts (Start menu, desktops) whose program is gone.
+fn dead_shortcuts() -> Vec<PathBuf> {
+    let roots = [
+        env_path("ProgramData").join(r"Microsoft\Windows\Start Menu\Programs"),
+        env_path("APPDATA").join(r"Microsoft\Windows\Start Menu\Programs"),
+        crate::organize::public_desktop(),
+        crate::tidy::desktop(),
+    ];
+    let mut out = vec![];
+    for r in roots {
+        let mut stack = vec![(r, 0)];
+        while let Some((d, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.filter_map(|e| e.ok()) {
+                let p = e.path();
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_dir() && !ft.is_symlink() && depth < 4 {
+                    stack.push((p, depth + 1));
+                } else if p.extension().map(|x| x.eq_ignore_ascii_case("lnk")).unwrap_or(false) {
+                    let (target, _) = crate::organize::target_of(&p);
+                    if let Some(exe) = crate::speed::command_exe(&format!("\"{target}\"")) {
+                        if !target.is_empty() && !exe.exists() {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Broken startup entries and dead shortcuts. With `apply`, remove them (startup entries can be undone).
+pub fn broken_things(apply: bool) -> (usize, usize) {
+    let startup = crate::speed::broken_startup();
+    let shortcuts = dead_shortcuts();
+    if apply {
+        let mut ch = vec![];
+        for (h, key, name) in &startup {
+            if let Ok(Some(c)) = crate::changelog::reg_del(*h, key, name) {
+                ch.push(c);
+            }
+        }
+        crate::changelog::record_many("Deep clean", "Removed broken startup entries", &format!("{} entries pointing at deleted programs", ch.len()), ch);
+        for s in &shortcuts {
+            let _ = std::fs::remove_file(s);
+            if let Some(parent) = s.parent() {
+                let _ = std::fs::remove_dir(parent); // empty Start menu folder
+            }
+        }
+    }
+    (startup.len(), shortcuts.len())
+}
+
 /// What a deep clean would remove (sizes where they're cheap to measure).
 pub fn scan() -> Vec<Item> {
     let mut out = vec![];
@@ -407,6 +461,8 @@ pub fn scan() -> Vec<Item> {
     }
     let logs = old_logs();
     out.push(item("logs", "Old Windows logs & memory dumps", format!("{} files", logs.len()), logs.iter().map(|p| size_of(p)).sum()));
+    let (bs, ds) = broken_things(false);
+    out.push(item("broken", "Broken startup entries & dead shortcuts", format!("{bs} startup entries and {ds} shortcuts pointing at deleted apps"), 0));
     let lc = launcher_caches();
     out.push(item("launchers", "Discord, Steam & Epic web caches", "Only while they're closed".into(), lc.iter().map(|p| size_of(p)).sum()));
     let inst = old_installers();
@@ -454,6 +510,9 @@ pub fn run(ids: &[String]) -> Vec<(String, u64)> {
     if want("logs") {
         report.push(("Old logs & dumps".to_string(), old_logs().iter().map(|p| remove(p)).sum()));
     }
+    if want("broken") {
+        broken_things(true);
+    }
     if want("launchers") {
         report.push(("Launcher caches".to_string(), launcher_caches().iter().map(|p| remove(p)).sum()));
     }
@@ -479,7 +538,7 @@ pub fn run(ids: &[String]) -> Vec<(String, u64)> {
     report
 }
 
-pub const ALL: &[&str] = &["restore", "drivers", "leftovers", "gpu", "logs", "launchers", "installers", "windowsold", "components"];
+pub const ALL: &[&str] = &["restore", "drivers", "leftovers", "broken", "gpu", "logs", "launchers", "installers", "windowsold", "components"];
 
 /// Autopilot (when you're away): everything.
 pub fn run_auto() {

@@ -302,6 +302,8 @@ const SMART: [string, string, "engine" | "app"][] = [
   ["cleanup", "Clearing junk", "engine"],
   ["privacy", "Blocking ads & tracking in Windows", "engine"],
   ["services", "Turning off useless background services", "engine"],
+  ["debloat", "Removing preinstalled junk apps", "engine"],
+  ["junk", "Removing broken startup entries and dead shortcuts", "engine"],
   ["startup", "Making startup faster", "engine"],
   ["power", "Setting up Game Mode, updates and visuals", "engine"],
   ["dns", "Finding the fastest DNS", "engine"],
@@ -317,7 +319,7 @@ PAGES.smart = {
   sub: "One click — every safe optimization, then Autopilot keeps it that way",
   async render(el) {
     el.innerHTML = `<div class="card panic"><div class="row between"><div><h3>Everything, done for you</h3>
-        <p class="sub" style="margin:0">Repairs, cleanup, privacy, startup, network and your desktop — then everything stays automatic. Nothing is uninstalled here, and every change can be undone from Safety.</p></div>
+        <p class="sub" style="margin:0">Repairs, cleanup, junk apps, privacy, startup, network and your desktop — then everything stays automatic. Only preinstalled junk nobody needs is removed (never your own apps), and settings changes can be undone from Safety.</p></div>
         <button class="btn primary big" id="smartgo">${smartRunning ? "Working…" : "Start"}</button></div></div>
       <div class="card" style="margin-top:14px"><div class="steps" id="steps">${SMART.map(([id, label]) => `<div class="step" data-step="${id}"><i></i><div><b>${label}</b><span></span></div></div>`).join("")}</div></div>`;
     const go2 = q<HTMLButtonElement>("#smartgo");
@@ -1044,13 +1046,15 @@ PAGES.autopilot = {
 
       <div class="grid g2" style="margin-top:14px">
         <div class="card"><div class="row between"><h3>Unused app cleaner</h3>${toggle('data-cfg="unused_cleaner"', c.unused_cleaner)}</div>
-          <p class="sub">Fully automatic. Uses Windows' own history of what you run (Prefetch, UserAssist, BAM), so it also knows about apps you stopped using long before Nightmoth was installed. Removes them silently, deletes the folder they leave behind, and gives you 5 seconds to cancel each one. Cancelled apps are never touched again. System apps, drivers, games and security software are protected.</p>
+          <p class="sub">Fully automatic. Uses Windows' own history of what you run (Prefetch, UserAssist, BAM), so it also knows about apps you stopped using long before Nightmoth was installed. Tries every way to remove them — the app's own uninstaller, winget, common silent switches, and as a last resort removing it by hand — then deletes the folder it leaves behind. You get 5 seconds to cancel each one. Cancelled apps are never touched again. System apps, drivers, games and security software are protected.</p>
           <div class="row"><span class="muted">Remove after</span><select data-cfg="unused_days" data-num>${[30, 60, 90, 180, 365].map((v) => `<option value="${v}" ${v === c.unused_days ? "selected" : ""}>${v} days unused</option>`).join("")}</select></div></div>
         <div class="card"><div class="row between"><h3>Cleanup when it's needed</h3>${toggle('data-cfg="auto_cleanup"', c.auto_cleanup)}</div>
           <p class="sub">No timetable: runs when your drive is getting full or junk has piled up, and does a deep clean while you're away. Last run: ${ago(c.last_cleanup)}.</p>
           <div class="row between"><span>Deep clean (restore points, old drivers, app leftovers…)</span>${toggle('data-cfg="deep_clean"', c.deep_clean)}</div></div>
         <div class="card"><div class="row between"><h3>Repair other tools' damage</h3>${toggle('data-cfg="fix_other_tools"', c.fix_other_tools)}</div>
           <p class="sub">Finds what other optimizers broke (Windows Update, Defender, services, boot "tweaks") and fixes it safely, twice a day. ${c.fixes?.filter((f: Any) => f.action === "fixed").length || 0} repaired so far.</p></div>
+        <div class="card"><div class="row between"><h3>Remove junk apps</h3>${toggle('data-cfg="auto_debloat"', c.auto_debloat)}</div>
+          <p class="sub">Preinstalled apps nobody needs (Candy Crush, Tips, Feedback Hub, Clipchamp, Bing apps…) are removed for every user — and again whenever a Windows update brings them back. If one way fails, Nightmoth tries the next.</p></div>
         <div class="card"><div class="row between"><h3>Keep apps updated</h3>${toggle('data-cfg="auto_updates"', c.auto_updates)}</div>
           <p class="sub">Installs app updates through winget once a day, while you're away and plugged in.</p></div>
         <div class="card"><div class="row between"><h3>Startup guard</h3>${toggle('data-cfg="startup_watcher"', c.startup_watcher)}</div>

@@ -172,7 +172,7 @@ pub fn is_app_file(p: &Path) -> bool {
 // ------------------------------------------------------------------ reading shortcuts
 
 /// (target path, arguments) of a .lnk, or the URL of a .url.
-fn target_of(p: &Path) -> (String, String) {
+pub fn target_of(p: &Path) -> (String, String) {
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if ext == "url" {
         let s = std::fs::read_to_string(p).unwrap_or_default();

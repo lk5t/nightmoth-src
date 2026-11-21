@@ -76,7 +76,7 @@ pub fn start_app_worker() {
             std::thread::spawn(move || {
                 crate::log::log(&format!("app: running {} job", job.kind));
                 let (code, error) = match job.kind.as_str() {
-                    "cmd" => match crate::win::run_cmdline(&job.line) {
+                    "cmd" => match crate::win::run_cmdline_timeout(&job.line, 6 * 60) {
                         Ok(c) => (c, String::new()),
                         Err(e) => (-1, e),
                     },

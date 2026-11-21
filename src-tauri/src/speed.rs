@@ -379,11 +379,12 @@ fn clear_dir(p: &Path, thumbs_only: bool) {
             continue;
         }
         if ft.is_dir() {
-            if !thumbs_only {
-                let _ = std::fs::remove_dir_all(e.path());
+            if !thumbs_only && std::fs::remove_dir_all(e.path()).is_err() {
+                // locked or protected: keep trying other ways (in-use files go at the next restart)
+                crate::win::force_delete(&e.path());
             }
-        } else if !thumbs_only || e.file_name().to_string_lossy().starts_with("thumbcache_") {
-            let _ = std::fs::remove_file(e.path());
+        } else if (!thumbs_only || e.file_name().to_string_lossy().starts_with("thumbcache_")) && std::fs::remove_file(e.path()).is_err() {
+            crate::win::force_delete(&e.path());
         }
     }
 }
@@ -469,36 +470,60 @@ pub struct BloatApp {
     pub installed: bool,
 }
 
-const BLOAT: &[(&str, &str, &str)] = &[
-    ("Microsoft.BingNews", "Microsoft News", "News feed app"),
-    ("Microsoft.BingWeather", "Weather", "MSN Weather app"),
-    ("Microsoft.BingSearch", "Bing Search", "Bing search extras"),
-    ("Microsoft.GetHelp", "Get Help", "Microsoft support app"),
-    ("Microsoft.Getstarted", "Tips", "Windows tips app"),
-    ("Microsoft.MicrosoftSolitaireCollection", "Solitaire Collection", "Ad-supported card games"),
-    ("Microsoft.MicrosoftOfficeHub", "Microsoft 365 (Office hub)", "Office launcher/upsell"),
-    ("Microsoft.People", "People", "Contacts app"),
-    ("Microsoft.PowerAutomateDesktop", "Power Automate", "Automation tool"),
-    ("Microsoft.Todos", "Microsoft To Do", "To-do list app"),
-    ("Microsoft.WindowsFeedbackHub", "Feedback Hub", "Sends feedback to Microsoft"),
-    ("Microsoft.WindowsMaps", "Maps", "Offline maps app"),
-    ("Microsoft.ZuneVideo", "Movies & TV", "Old video app"),
-    ("Microsoft.549981C3F5F10", "Cortana", "Old assistant"),
-    ("Microsoft.MicrosoftJournal", "Journal", "Pen notes app"),
-    ("Microsoft.Windows.DevHome", "Dev Home", "Developer dashboard"),
-    ("Microsoft.YourPhone", "Phone Link", "Connects your phone"),
-    ("MicrosoftCorporationII.MicrosoftFamily", "Family Safety", "Parental controls app"),
-    ("Clipchamp.Clipchamp", "Clipchamp", "Video editor"),
-    ("MicrosoftTeams", "Teams (personal)", "Chat app pinned by Windows"),
-    ("MSTeams", "Teams (new)", "Chat app pinned by Windows"),
-    ("king.com.*", "Candy Crush & King games", "Preinstalled games"),
-    ("*Disney*", "Disney+", "Preinstalled streaming app"),
-    ("*SpotifyAB*", "Spotify (preinstalled)", "Only if Windows preinstalled it"),
-    ("*TikTok*", "TikTok", "Preinstalled app"),
-    ("*Instagram*", "Instagram", "Preinstalled app"),
-    ("*Facebook*", "Facebook", "Preinstalled app"),
-    ("*AmazonPrimeVideo*", "Prime Video", "Preinstalled app"),
-    ("Microsoft.XboxApp", "Xbox Console Companion", "Old Xbox app"),
+/// (package pattern, name, what it is, removed automatically by Autopilot?)
+/// Automatic removal only covers apps nobody needs; the rest are offered in Speed → Debloat.
+const BLOAT: &[(&str, &str, &str, bool)] = &[
+    ("Microsoft.BingNews", "Microsoft News", "News feed app", true),
+    ("Microsoft.BingWeather", "Weather", "MSN Weather app", false),
+    ("Microsoft.BingSearch", "Bing Search", "Bing search extras", true),
+    ("Microsoft.BingFinance", "Money", "Old finance app", true),
+    ("Microsoft.BingSports", "Sports", "Old sports app", true),
+    ("Microsoft.BingTravel", "Travel", "Old travel app", true),
+    ("Microsoft.GetHelp", "Get Help", "Microsoft support app", true),
+    ("Microsoft.Getstarted", "Tips", "Windows tips app", true),
+    ("Microsoft.MicrosoftSolitaireCollection", "Solitaire Collection", "Ad-supported card games", true),
+    ("Microsoft.MicrosoftOfficeHub", "Microsoft 365 (Office hub)", "Office launcher/upsell", true),
+    ("Microsoft.People", "People", "Contacts app", true),
+    ("Microsoft.PowerAutomateDesktop", "Power Automate", "Automation tool", true),
+    ("Microsoft.Todos", "Microsoft To Do", "To-do list app", false),
+    ("Microsoft.WindowsFeedbackHub", "Feedback Hub", "Sends feedback to Microsoft", true),
+    ("Microsoft.WindowsMaps", "Maps", "Offline maps app", true),
+    ("Microsoft.ZuneVideo", "Movies & TV", "Old video app", true),
+    ("Microsoft.549981C3F5F10", "Cortana", "Old assistant", true),
+    ("Microsoft.MicrosoftJournal", "Journal", "Pen notes app", false),
+    ("Microsoft.Windows.DevHome", "Dev Home", "Developer dashboard", true),
+    ("Microsoft.YourPhone", "Phone Link", "Connects your phone", false),
+    ("MicrosoftCorporationII.MicrosoftFamily", "Family Safety", "Parental controls app", false),
+    ("Clipchamp.Clipchamp", "Clipchamp", "Video editor", true),
+    ("MicrosoftTeams", "Teams (personal)", "Chat app pinned by Windows", true),
+    ("MSTeams", "Teams (new)", "Chat app pinned by Windows", false),
+    ("Microsoft.Messaging", "Messaging", "Old SMS app", true),
+    ("Microsoft.MixedReality.Portal", "Mixed Reality Portal", "VR headset setup", true),
+    ("Microsoft.OneConnect", "Mobile Plans", "Carrier data plans", true),
+    ("Microsoft.3DBuilder", "3D Builder", "Old 3D app", true),
+    ("Microsoft.Microsoft3DViewer", "3D Viewer", "3D model viewer", true),
+    ("Microsoft.Print3D", "Print 3D", "Old 3D printing app", true),
+    ("Microsoft.SkypeApp", "Skype", "Discontinued", true),
+    ("Microsoft.Wallet", "Wallet", "Old payments app", true),
+    ("Microsoft.MicrosoftStickyNotes", "Sticky Notes", "Notes app", false),
+    ("7EE7776C.LinkedInforWindows", "LinkedIn", "Preinstalled app", true),
+    ("king.com.*", "Candy Crush & King games", "Preinstalled games", true),
+    ("*CandyCrush*", "Candy Crush", "Preinstalled game", true),
+    ("*BubbleWitch*", "Bubble Witch", "Preinstalled game", true),
+    ("*MarchofEmpires*", "March of Empires", "Preinstalled game", true),
+    ("*HiddenCity*", "Hidden City", "Preinstalled game", true),
+    ("*FarmVille*", "FarmVille", "Preinstalled game", true),
+    ("*RoyalRevolt*", "Royal Revolt", "Preinstalled game", true),
+    ("*Asphalt8*", "Asphalt 8", "Preinstalled game", true),
+    ("*Disney*", "Disney+", "Preinstalled streaming app", false),
+    ("*SpotifyAB*", "Spotify (Store)", "Only if you don't use it", false),
+    ("*TikTok*", "TikTok", "Preinstalled app", false),
+    ("*Instagram*", "Instagram", "Preinstalled app", false),
+    ("*Facebook*", "Facebook", "Preinstalled app", false),
+    ("*Twitter*", "Twitter / X", "Preinstalled app", false),
+    ("*Netflix*", "Netflix", "Preinstalled app", false),
+    ("*AmazonPrimeVideo*", "Prime Video", "Preinstalled app", false),
+    ("Microsoft.XboxApp", "Xbox Console Companion", "Old Xbox app", true),
 ];
 
 fn wildcard_match(pat: &str, s: &str) -> bool {
@@ -536,7 +561,7 @@ pub fn debloat_list() -> Vec<BloatApp> {
         .collect();
     BLOAT
         .iter()
-        .map(|(id, name, desc)| BloatApp {
+        .map(|(id, name, desc, _)| BloatApp {
             id: id.to_string(),
             name: name.to_string(),
             desc: desc.to_string(),
@@ -545,28 +570,70 @@ pub fn debloat_list() -> Vec<BloatApp> {
         .collect()
 }
 
+fn appx_present(pattern: &str) -> bool {
+    let q = ps_quote(pattern);
+    ps(&format!("@(Get-AppxPackage -AllUsers -Name {q}).Count")).map(|o| o.trim() != "0").unwrap_or(true)
+}
+
+/// Remove a Store app whatever it takes: for all users, per user, the provisioned copy
+/// (so new accounts don't get it back), then DISM. Checks after each step.
+fn appx_remove(pattern: &str) -> Result<(), String> {
+    let q = ps_quote(pattern);
+    let steps = [
+        format!("Get-AppxPackage -AllUsers -Name {q} | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue"),
+        format!("Get-AppxPackage -AllUsers -Name {q} | ForEach-Object {{ Remove-AppxPackage -Package $_.PackageFullName -ErrorAction SilentlyContinue }}"),
+        format!("Get-AppxPackage -AllUsers -Name {q} | ForEach-Object {{ Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction SilentlyContinue }}"),
+    ];
+    for st in &steps {
+        let _ = ps(st);
+        if !appx_present(pattern) {
+            break;
+        }
+    }
+    // never comes back for new users either
+    let _ = ps(&format!(
+        "Get-AppxProvisionedPackage -Online | Where-Object {{ $_.DisplayName -like {q} }} | Remove-AppxProvisionedPackage -Online -AllUsers -ErrorAction SilentlyContinue | Out-Null"
+    ));
+    if appx_present(pattern) {
+        // DISM as the last way
+        let names = ps_json(&format!(
+            "ConvertTo-Json -InputObject @(Get-AppxProvisionedPackage -Online | Where-Object {{ $_.DisplayName -like {q} }} | Select-Object -ExpandProperty PackageName) -Compress"
+        ));
+        for n in names.iter().filter_map(|v| v.as_str()) {
+            let _ = crate::win::run("Dism.exe", &["/Online", "/Remove-ProvisionedAppxPackage", &format!("/PackageName:{n}"), "/Quiet"]);
+        }
+    }
+    if appx_present(pattern) {
+        Err("Windows protects this app on this PC".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn debloat_remove(ids: &[String]) -> (u32, Vec<String>) {
     let mut n = 0;
     let mut errs = vec![];
     for id in ids {
-        if !BLOAT.iter().any(|b| b.0 == id.as_str()) {
-            continue;
-        }
-        let q = ps_quote(id);
-        let script = format!(
-            "Get-AppxPackage -AllUsers -Name {q} | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue; \
-             Get-AppxProvisionedPackage -Online | Where-Object {{ $_.DisplayName -like {q} }} | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Out-Null"
-        );
-        match ps(&script) {
+        let Some(b) = BLOAT.iter().find(|b| b.0 == id.as_str()) else { continue };
+        match appx_remove(id) {
             Ok(_) => {
                 n += 1;
-                let name = BLOAT.iter().find(|b| b.0 == id.as_str()).map(|b| b.1).unwrap_or(id.as_str());
-                changelog::record("Speed", &format!("Removed {name}"), "Preinstalled app", Change::AppxRemoved { name: id.clone() });
+                changelog::record("Speed", &format!("Removed {}", b.1), "Preinstalled app", Change::AppxRemoved { name: id.clone() });
             }
-            Err(e) => errs.push(format!("{id}: {e}")),
+            Err(e) => errs.push(format!("{}: {e}", b.1)),
         }
     }
     (n, errs)
+}
+
+/// Autopilot: remove the junk Windows (re)installs — feature updates often bring it back.
+pub fn debloat_auto() -> u32 {
+    let ids: Vec<String> = debloat_list().into_iter().filter(|b| b.installed && BLOAT.iter().any(|x| x.0 == b.id && x.3)).map(|b| b.id).collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    let (n, _) = debloat_remove(&ids);
+    n
 }
 
 // ================================================================== services
@@ -904,4 +971,45 @@ pub fn delay_heavy_startup() -> u32 {
         }
     }
     n
+}
+
+/// The program file a command line starts, if it's a plain local path (env vars expanded).
+pub fn command_exe(cmd: &str) -> Option<PathBuf> {
+    let c = cmd.trim();
+    let raw = if let Some(rest) = c.strip_prefix('"') {
+        rest.split('"').next()?.to_string()
+    } else {
+        let low = c.to_lowercase();
+        let end = low.find(".exe").map(|i| i + 4).unwrap_or(c.len());
+        c[..end].to_string()
+    };
+    let mut path = raw;
+    // %ProgramFiles% and friends
+    while let (Some(a), true) = (path.find('%'), path.matches('%').count() >= 2) {
+        let Some(b) = path[a + 1..].find('%').map(|i| i + a + 1) else { break };
+        let val = env(&path[a + 1..b]);
+        if val.is_empty() {
+            return None;
+        }
+        path.replace_range(a..=b, &val);
+    }
+    let p = PathBuf::from(&path);
+    // only judge real local paths on drives that exist
+    let s = path.to_lowercase();
+    (s.len() > 3 && s.as_bytes()[1] == b':' && PathBuf::from(&path[..3]).exists()).then_some(p)
+}
+
+/// Run-key startup entries whose program no longer exists: (hive, key, value name, label).
+pub fn broken_startup() -> Vec<(Hive, String, String)> {
+    let mut out = vec![];
+    for src in RUN_SOURCES {
+        for (name, cmd) in crate::win::reg_values(src.hive, src.key) {
+            if let Some(exe) = command_exe(&cmd) {
+                if !exe.exists() {
+                    out.push((src.hive, src.key.to_string(), name));
+                }
+            }
+        }
+    }
+    out
 }

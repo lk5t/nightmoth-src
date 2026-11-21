@@ -185,6 +185,13 @@ pub fn tick(tick: u64) {
         with_cfg(|cf| cf.last_deep_clean = now());
         crate::deepclean::run_auto();
     }
+    if c.auto_debloat && now() - c.last_debloat > 86400 {
+        with_cfg(|cf| cf.last_debloat = now());
+        let n = crate::speed::debloat_auto();
+        if n > 0 {
+            toast::show("optimize", "Junk apps removed", &format!("{n} preinstalled apps nobody needs"));
+        }
+    }
     if c.auto_updates && !on_batt && now() - c.last_update_check > 86400 {
         with_cfg(|cf| cf.last_update_check = now());
         crate::updates::run_auto();

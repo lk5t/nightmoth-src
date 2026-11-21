@@ -446,6 +446,14 @@ fn smart_step(step: &str) -> Result<String, String> {
             }
             if n == 0 { "Background services already lean".into() } else { format!("Turned off {n} useless background services") }
         }
+        "debloat" => {
+            let n = speed::debloat_auto();
+            if n == 0 { "No preinstalled junk left".into() } else { format!("Removed {n} preinstalled junk apps") }
+        }
+        "junk" => {
+            let (startup, shortcuts) = crate::deepclean::broken_things(true);
+            if startup + shortcuts == 0 { "No broken startup entries or dead shortcuts".into() } else { format!("Removed {startup} broken startup entries and {shortcuts} dead shortcuts") }
+        }
         "startup" => {
             let n = speed::delay_heavy_startup();
             if n == 0 { "Startup already quick".into() } else { format!("{n} heavy apps now start a minute after login") }
@@ -478,6 +486,7 @@ fn smart_step(step: &str) -> Result<String, String> {
                 c.roblox_tune = true;
                 c.dns_auto = true;
                 c.organize_auto = true;
+                c.auto_debloat = true;
                 c.tidy_auto = true;
                 c.widgets_on = true;
                 c.theme_apps = true;

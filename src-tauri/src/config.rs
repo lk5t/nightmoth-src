@@ -162,6 +162,9 @@ pub struct Config {
     pub tidy_last: i64,
     /// sort every app on the desktop into folders by kind, automatically
     pub organize_auto: bool,
+    /// remove preinstalled junk automatically (and again when Windows brings it back)
+    pub auto_debloat: bool,
+    pub last_debloat: i64,
 
     // widgets (extra)
     pub notes: String,
@@ -262,6 +265,8 @@ impl Default for Config {
             tidy_auto: true,
             tidy_last: 0,
             organize_auto: false,
+            auto_debloat: true,
+            last_debloat: 0,
             notes: String::new(),
             weather_city: String::new(),
             weather_lat: 0.0,

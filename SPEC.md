@@ -207,6 +207,13 @@ Public desktop shortcuts are moved by the engine (admin) only into the user's ow
 - **Autopilot activity feed** on Home.
 - **Tray**: Make my PC perfect, Organize desktop now, Invisible taskbar and Desktop widgets switches.
 
+### 3.11 Added in 0.7 — removal that doesn't give up
+
+- **Uninstall chain** (unused-app cleaner and Remove button): the app's QuietUninstallString / known silent command → `MsiExec /X{product code}` (from the uninstall string or key name) → common silent switches on the uninstaller (`/S`, `/VERYSILENT…`, `/quiet`, `/silent`, `-s`, `--silent`, …, fast time limits) → `winget uninstall --exact --silent --force` → forced removal (close its processes, delete its own install folder, Start menu/desktop shortcuts pointing into it, and its uninstall entry; only for a dedicated folder that passes the leftover-folder checks). Every step is time-limited and verified before moving on. Per-user apps still run everything with the user's rights. The cleaner no longer needs a silent uninstaller to pick an app.
+- **Store junk**: longer list (Bing apps, Tips, Feedback Hub, Clipchamp, Cortana, Skype, 3D apps, Mixed Reality, Mobile Plans, LinkedIn, King/Gameloft/Zynga games…). Removal tries all users → per package → per package for all users → provisioned package → DISM, and checks after each. Autopilot ("Remove junk apps", on) removes the ones marked automatic once a day and again after Windows brings them back; apps people may use (Phone Link, To Do, Teams, streaming/social stubs) stay manual.
+- **Files**: deletes that fail are retried after clearing read-only/hidden/system flags, then (engine) after taking ownership and granting Administrators; links inside the folder are removed first so nothing leads elsewhere; whatever is still locked is deleted at the next restart (`MoveFileEx` delay-until-reboot). Used by cleanup and deep clean.
+- **Broken things**: Run-key startup entries whose program no longer exists (undoable) and Start menu/desktop shortcuts pointing at deleted programs, in deep clean and Make my PC perfect.
+
 ## 4. Toasts (Razer Cortex style)
 - Bottom-right of primary monitor, above the taskbar: 392×112 logical px window (card inset 10 px), sized from the primary monitor's scale factor so it is never cut off
 - Black card `#0A0A0B`, red left edge + red countdown bar, moth icon, title + one line

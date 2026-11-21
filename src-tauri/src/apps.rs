@@ -327,7 +327,6 @@ pub fn list() -> Vec<InstalledApp> {
             let candidate = usage_works
                 && !protected
                 && !kept
-                && silent
                 && installed_long_ago
                 && (!exes.is_empty() || lnk_used.is_some())
                 && days_unused.map(|d| d >= c.unused_days as i64).unwrap_or(false);
@@ -363,27 +362,153 @@ fn still_installed(name: &str) -> bool {
     })
 }
 
-/// Uninstall silently. Returns Err if no silent method or it failed.
-pub fn uninstall(app: &InstalledApp, module: &str) -> Result<(), String> {
-    let cmd = quiet_command(&app.uninstall, app.quiet.as_deref()).ok_or("This app has no silent uninstaller — remove it from Windows Settings")?;
-    if app.per_user() {
-        // Any program can write a per-user uninstall entry, so it never runs with admin rights.
-        crate::userjob::run("cmd", &cmd, Some(Duration::from_secs(15 * 60)))?;
-    } else {
-        win::run_cmdline(&cmd)?;
+/// Every way to uninstall an app silently, best first.
+fn attempts(app: &InstalledApp) -> Vec<String> {
+    let mut v: Vec<String> = vec![];
+    if let Some(q) = quiet_command(&app.uninstall, app.quiet.as_deref()) {
+        v.push(q);
     }
-    // installers often finish in a child process; wait a little
-    for _ in 0..40 {
-        if !still_installed(&app.name) {
-            break;
+    // MSI product code from the uninstall string or the registry key name
+    let sub = app.key.split_once(':').map(|x| x.1).unwrap_or("");
+    let guid = [app.uninstall.as_str(), sub].iter().find_map(|t| {
+        let a = t.find('{')?;
+        let b = t[a..].find('}')? + a;
+        Some(t[a..=b].to_string())
+    });
+    if let Some(g) = guid {
+        v.push(format!("MsiExec.exe /X{g} /qn /norestart"));
+    }
+    let u = app.uninstall.trim();
+    if !u.is_empty() && !u.to_lowercase().contains("msiexec") {
+        for sw in ["/S", "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART", "/quiet /norestart", "/silent", "-s", "--silent", "--uninstall -s", "/uninstall /quiet", "-uninstall -silent", "/qn"] {
+            v.push(format!("{u} {sw}"));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|x| seen.insert(x.to_lowercase()));
+    v
+}
+
+fn run_attempt(app: &InstalledApp, line: &str, secs: u64) {
+    if app.per_user() {
+        // per-user entries could have been written by any program: never with admin rights
+        let _ = crate::userjob::run("cmd", line, Some(Duration::from_secs(secs + 30)));
+    } else {
+        let _ = win::run_cmdline_timeout(line, secs);
+    }
+}
+
+fn gone_within(name: &str, secs: u64) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < secs {
+        if !still_installed(name) {
+            return true;
         }
         std::thread::sleep(Duration::from_secs(3));
     }
-    if still_installed(&app.name) {
-        return Err(format!("{} is still installed", app.name));
+    !still_installed(name)
+}
+
+/// Last resort: stop the app, delete its own folder, its shortcuts and its uninstall entry.
+/// Only for a dedicated install folder (never shared or system folders).
+fn force_remove(app: &InstalledApp) -> Result<(), String> {
+    let dir = leftover_dir(app).ok_or("its install folder isn't safe to delete by hand")?;
+    let low = dir.to_string_lossy().to_lowercase();
+    // close anything running from that folder
+    {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        for p in sys.processes().values() {
+            if p.exe().map(|e| e.to_string_lossy().to_lowercase().starts_with(&low)).unwrap_or(false) {
+                win::kill_process(p.pid().as_u32());
+            }
+        }
     }
-    let leftovers = remove_leftovers(app);
-    let detail = if leftovers { format!("{} MB · leftover folder deleted", app.size_mb) } else { format!("{} MB", app.size_mb) };
+    let sub = app.key.split_once(':').map(|x| x.1.to_string()).unwrap_or_default();
+    if app.per_user() {
+        let _ = crate::userjob::run("cmd", &format!("rmdir /s /q \"{}\"", dir.to_string_lossy()), Some(Duration::from_secs(180)));
+        if !sub.is_empty() {
+            let _ = crate::userjob::run("cmd", &format!("reg delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{sub}\" /f"), Some(Duration::from_secs(60)));
+        }
+    } else {
+        win::force_delete(&dir);
+        for (h, base) in UNINSTALL.iter().filter(|(h, _)| *h == Hive::HKLM) {
+            let k = format!(r"{base}\{sub}");
+            if !sub.is_empty() && win::reg_str(*h, &k, "DisplayName").as_deref() == Some(app.name.as_str()) {
+                let _ = win::reg_delete_tree(*h, &k);
+            }
+        }
+    }
+    remove_shortcuts_into(&low);
+    Ok(())
+}
+
+/// Delete Start menu and desktop shortcuts that point into a folder.
+fn remove_shortcuts_into(dir_low: &str) {
+    let mut roots = vec![
+        std::path::PathBuf::from(win::env("ProgramData")).join(r"Microsoft\Windows\Start Menu\Programs"),
+        std::path::PathBuf::from(win::env("APPDATA")).join(r"Microsoft\Windows\Start Menu\Programs"),
+        crate::organize::public_desktop(),
+    ];
+    roots.push(crate::tidy::desktop());
+    for r in roots {
+        let mut stack = vec![(r, 0)];
+        while let Some((d, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.filter_map(|e| e.ok()) {
+                let p = e.path();
+                if p.is_dir() && depth < 3 {
+                    stack.push((p, depth + 1));
+                } else if p.extension().map(|x| x.eq_ignore_ascii_case("lnk")).unwrap_or(false) {
+                    let (target, _) = crate::organize::target_of(&p);
+                    if !target.is_empty() && target.to_lowercase().starts_with(dir_low) {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
+            // drop the Start menu folder if it's empty now
+            let _ = std::fs::remove_dir(&d);
+        }
+    }
+}
+
+/// Uninstall whatever it takes: the app's own silent uninstaller, the MSI product code,
+/// winget, every common silent switch, and finally removing it by hand.
+pub fn uninstall(app: &InstalledApp, module: &str) -> Result<(), String> {
+    let mut how = String::new();
+    for (i, line) in attempts(app).into_iter().enumerate() {
+        // the app's own/known silent commands get time; guessed switches fail fast
+        let (limit, wait) = if i < 2 { (5 * 60, 60) } else { (75, 15) };
+        run_attempt(app, &line, limit);
+        if gone_within(&app.name, wait) {
+            how = "uninstaller".into();
+            break;
+        }
+    }
+    if how.is_empty() {
+        let w = format!(
+            "winget uninstall --name \"{}\" --exact --silent --force --accept-source-agreements --disable-interactivity",
+            app.name.replace('"', "")
+        );
+        run_attempt(app, &w, 5 * 60);
+        if gone_within(&app.name, 60) {
+            how = "winget".into();
+        }
+    }
+    let mut forced = false;
+    if how.is_empty() {
+        force_remove(app).map_err(|e| format!("{} couldn't be removed: no uninstaller worked and {e}", app.name))?;
+        if !gone_within(&app.name, 10) {
+            return Err(format!("{} is still installed", app.name));
+        }
+        forced = true;
+    }
+    let leftovers = !forced && remove_leftovers(app);
+    let detail = match (forced, leftovers) {
+        (true, _) => format!("{} MB · removed by hand (its uninstaller didn't work)", app.size_mb),
+        (false, true) => format!("{} MB · leftover folder deleted", app.size_mb),
+        _ => format!("{} MB", app.size_mb),
+    };
     changelog::record(module, &format!("Removed {}", app.name), &detail, Change::AppRemoved { name: app.name.clone() });
     with_cfg(|cf| {
         cf.stats.apps_removed += 1;
