@@ -207,8 +207,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             }
             "organize" => {
                 std::thread::spawn(|| match organize::run(std::time::Duration::ZERO) {
-                    Ok(m) if !m.is_empty() => ui_toast::local("Desktop organized", &format!("{} apps sorted into folders", m.len())),
-                    Ok(_) => ui_toast::local("Desktop organized", "Everything was already in its folder"),
+                    Ok(m) if !m.is_empty() => ui_toast::local("Desktop organized", &format!("{} apps grouped with similar ones", m.len())),
+                    Ok(_) => ui_toast::local("Desktop organized", "Icons re-arranged in their groups"),
                     Err(e) => ui_toast::local("Couldn't organize", &e),
                 });
             }
@@ -295,14 +295,18 @@ async fn organize_run() -> Result<usize, String> {
     let mut kinds: Vec<&str> = moved.iter().map(|m| m.1.as_str()).collect();
     kinds.sort();
     kinds.dedup();
-    ui_toast::local("Desktop organized", &format!("{n} apps sorted into {} folders", kinds.len()));
+    if n > 0 {
+        ui_toast::local("Desktop organized", &format!("{n} apps grouped with similar ones · {} groups", kinds.len()));
+    } else {
+        ui_toast::local("Desktop organized", "Icons re-arranged in their groups");
+    }
     Ok(n)
 }
 
 #[tauri::command]
 fn organize_undo() -> Result<usize, String> {
     let n = organize::undo()?;
-    ui_toast::local("Desktop put back", &format!("{n} apps back where they were"));
+    ui_toast::local("Desktop put back", &format!("{n} icons back where they were"));
     Ok(n)
 }
 

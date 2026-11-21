@@ -1,6 +1,6 @@
 [package]
 name = "nightmoth"
-version = "0.7.0"
+version = "0.8.0"
 description = "Nightmoth — desktop glow-up + autopilot optimizer"
 authors = ["lk5t"]
 edition = "2021"
@@ -26,7 +26,7 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 
 # WinRT/COM for media controls and per-monitor wallpapers (same version Tauri already uses)
-windows = { version = "0.62", features = ["Media_Control", "Foundation", "Foundation_Collections", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell", "Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows = { version = "0.62", features = ["Media_Control", "Foundation", "Foundation_Collections", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Variant", "Win32_System_Ole", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dependencies.windows-sys]
 version = "0.59"

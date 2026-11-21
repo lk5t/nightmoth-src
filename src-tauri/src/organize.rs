@@ -125,6 +125,7 @@ const SITES: &[(&str, &str)] = &[
 ];
 
 #[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
 struct Memory {
     /// file name -> category Nightmoth put it in
     placed: HashMap<String, String>,
@@ -133,6 +134,10 @@ struct Memory {
     /// last organize: (from, to, from public desktop)
     last: Vec<(String, String, bool)>,
     ts: i64,
+    /// apps placed by the last arrange (full paths, lowercase)
+    arranged: Vec<String>,
+    /// icon positions before the last arrange, for Undo: (parsing name, x, y)
+    before: Vec<(String, i32, i32)>,
 }
 
 fn memory_path() -> PathBuf {
@@ -339,7 +344,7 @@ pub struct DesktopApp {
     pub kind: String,
     pub why: String,
     pub public: bool,
-    /// already inside its folder
+    /// already placed with its group
     pub sorted: bool,
 }
 
@@ -348,77 +353,6 @@ fn older_than(p: &Path, secs: u64) -> bool {
         .and_then(|m| m.modified())
         .map(|t| SystemTime::now().duration_since(t).unwrap_or(Duration::ZERO) > Duration::from_secs(secs))
         .unwrap_or(true)
-}
-
-/// You moved an app into another folder yourself: remember that.
-fn learn(mem: &mut Memory) {
-    let base = crate::tidy::desktop();
-    for kind in KINDS {
-        let Ok(rd) = std::fs::read_dir(base.join(kind)) else { continue };
-        for e in rd.filter_map(|e| e.ok()) {
-            let p = e.path();
-            if !is_app_file(&p) {
-                continue;
-            }
-            let file = e.file_name().to_string_lossy().to_string();
-            if mem.placed.get(&file).map(|k| k != kind).unwrap_or(true) {
-                mem.overrides.insert(app_key(&p), kind.to_string());
-            }
-            mem.placed.insert(file, kind.to_string());
-        }
-    }
-}
-
-/// Everything on the desktop that's an app, and the folder it belongs in.
-pub fn scan() -> Vec<DesktopApp> {
-    let mut mem = load();
-    learn(&mut mem);
-    save(&mem);
-    let base = crate::tidy::desktop();
-    let index = uninstall_index();
-    let mut out = vec![];
-    let mut add = |p: PathBuf, public: bool, sorted_in: Option<&str>| {
-        if !is_app_file(&p) {
-            return;
-        }
-        let key = app_key(&p);
-        let (kind, why) = match mem.overrides.get(&key) {
-            Some(k) => (k.clone(), "your choice".to_string()),
-            None => match sorted_in {
-                Some(k) => (k.to_string(), "in its folder".to_string()),
-                None => {
-                    let (k, w) = classify(&p, &index);
-                    (k.to_string(), w)
-                }
-            },
-        };
-        out.push(DesktopApp {
-            name: p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
-            file: p.to_string_lossy().to_string(),
-            sorted: sorted_in == Some(kind.as_str()),
-            kind,
-            why,
-            public,
-        });
-    };
-    for (dir, public) in [(base.clone(), false), (public_desktop(), true)] {
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.filter_map(|e| e.ok()) {
-                if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                    add(e.path(), public, None);
-                }
-            }
-        }
-    }
-    for kind in KINDS {
-        if let Ok(rd) = std::fs::read_dir(base.join(kind)) {
-            for e in rd.filter_map(|e| e.ok()) {
-                add(e.path(), false, Some(kind));
-            }
-        }
-    }
-    out.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-    out
 }
 
 fn free_name(dir: &Path, name: &str) -> PathBuf {
@@ -432,119 +366,298 @@ fn free_name(dir: &Path, name: &str) -> PathBuf {
     (2..1000).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|c| !c.exists()).unwrap_or(first)
 }
 
-/// Move every app into its folder. `min_age` leaves just-created shortcuts alone (installers still running).
-pub fn run(min_age: Duration) -> Result<Vec<(String, String)>, String> {
+/// Before 0.8 apps were put into category folders: take them back out onto the desktop.
+fn flatten_folders(mem: &mut Memory) {
     let base = crate::tidy::desktop();
-    let mut mem = load();
-    let apps = scan();
-    let mut moved_names = vec![];
-    let mut batch = vec![];
-    let mut public_moves = vec![];
-    for a in apps.iter().filter(|a| !a.sorted) {
-        let src = PathBuf::from(&a.file);
-        if !older_than(&src, min_age.as_secs()) {
-            continue;
+    let mut public_back = vec![];
+    for kind in KINDS {
+        let dir = base.join(kind);
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            let from_public = mem.last.iter().find(|l| l.2 && Path::new(&l.1) == p);
+            if let Some((orig, _, _)) = from_public {
+                let name = Path::new(orig).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                public_back.push(json!({ "from": p.to_string_lossy(), "name": name }));
+                continue;
+            }
+            let dest = free_name(&base, &e.file_name().to_string_lossy());
+            let _ = std::fs::rename(&p, &dest);
         }
-        let dir = base.join(&a.kind);
-        if std::fs::create_dir_all(&dir).is_err() {
-            continue;
+        if !public_back.is_empty() {
+            let _ = crate::ipc::call("public_desktop_restore", json!({ "moves": public_back.clone() }));
+            public_back.clear();
         }
-        let Some(fname) = src.file_name().map(|f| f.to_string_lossy().to_string()) else { continue };
-        let dest = free_name(&dir, &fname);
-        if a.public {
-            public_moves.push(json!({ "name": fname, "dest": dest.to_string_lossy() }));
-            batch.push((a.file.clone(), dest.to_string_lossy().to_string(), true));
-        } else if std::fs::rename(&src, &dest).is_ok() {
-            batch.push((a.file.clone(), dest.to_string_lossy().to_string(), false));
-        } else {
-            continue;
-        }
-        mem.placed.insert(dest.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or(fname), a.kind.clone());
-        moved_names.push((a.name.clone(), a.kind.clone()));
+        let _ = std::fs::remove_dir(&dir);
     }
-    if !public_moves.is_empty() {
-        // shared-desktop shortcuts need admin: the engine moves them (checks they really go into your desktop)
-        if let Err(e) = crate::ipc::call("public_desktop_move", json!({ "moves": public_moves })) {
-            crate::log::log(&format!("organize: shared desktop shortcuts not moved: {e}"));
-            batch.retain(|b| !b.2);
-            moved_names.retain(|(n, _)| apps.iter().any(|a| &a.name == n && !a.public));
-        }
-    }
-    if !batch.is_empty() {
-        mem.last = batch;
-        mem.ts = win::now();
-    }
-    save(&mem);
-    refresh_desktop();
-    Ok(moved_names)
+    mem.last.clear();
 }
 
-/// Pick a folder for an app yourself (remembered from now on).
+/// Everything on the desktop that's an app, and the group it belongs to.
+pub fn scan() -> Vec<DesktopApp> {
+    let mem = load();
+    let base = crate::tidy::desktop();
+    let index = uninstall_index();
+    let mut out = vec![];
+    for (dir, public) in [(base.clone(), false), (public_desktop(), true)] {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if !e.file_type().map(|t| t.is_file()).unwrap_or(false) || !is_app_file(&p) {
+                continue;
+            }
+            let key = app_key(&p);
+            let (kind, why) = match mem.overrides.get(&key) {
+                Some(k) => (k.clone(), "your choice".to_string()),
+                None => {
+                    let (k, w) = classify(&p, &index);
+                    (k.to_string(), w)
+                }
+            };
+            let file = p.to_string_lossy().to_string();
+            out.push(DesktopApp {
+                name: p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                sorted: mem.arranged.contains(&file.to_lowercase()),
+                file,
+                kind,
+                why,
+                public,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out
+}
+
+// ------------------------------------------------------------------ the desktop's own icon view
+
+use windows::core::Interface;
+use windows::Win32::Foundation::POINT;
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, IServiceProvider, CLSCTX_ALL, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Variant::VARIANT;
+use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+use windows::Win32::UI::Shell::{
+    IFolderView2, IShellBrowser, IShellWindows, ShellWindows, FWF_AUTOARRANGE, SID_STopLevelBrowser, SIGDN_DESKTOPABSOLUTEPARSING, SVGIO_ALLVIEW,
+    SVSI_POSITIONITEM, SWC_DESKTOP, SWFO_NEEDDISPATCH,
+};
+
+struct Icon {
+    name: String,
+    pidl: *mut ITEMIDLIST,
+    pos: POINT,
+}
+
+struct View {
+    fv: IFolderView2,
+    icons: Vec<Icon>,
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        for i in &self.icons {
+            unsafe { CoTaskMemFree(Some(i.pidl as *const _)) };
+        }
+    }
+}
+
+/// The desktop's icon view (the same one Windows uses when you drag icons around).
+fn desktop_view() -> Result<View, String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let sw: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+        let mut hwnd = 0i32;
+        let empty = VARIANT::default();
+        let disp = sw.FindWindowSW(&empty, &empty, SWC_DESKTOP, &mut hwnd, SWFO_NEEDDISPATCH).map_err(|e| e.to_string())?;
+        let sp: IServiceProvider = disp.cast().map_err(|e| e.to_string())?;
+        let browser: IShellBrowser = sp.QueryService(&SID_STopLevelBrowser).map_err(|e| e.to_string())?;
+        let view = browser.QueryActiveShellView().map_err(|e| e.to_string())?;
+        let fv: IFolderView2 = view.cast().map_err(|e| e.to_string())?;
+        let n = fv.ItemCount(SVGIO_ALLVIEW).map_err(|e| e.to_string())?;
+        let mut icons = vec![];
+        for i in 0..n {
+            let Ok(item) = fv.GetItem::<windows::Win32::UI::Shell::IShellItem>(i) else { continue };
+            let Ok(namep) = item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) else { continue };
+            let name = namep.to_string().unwrap_or_default();
+            CoTaskMemFree(Some(namep.0 as *const _));
+            let Ok(pidl) = fv.Item(i) else { continue };
+            let pos = fv.GetItemPosition(pidl).unwrap_or_default();
+            icons.push(Icon { name, pidl, pos });
+        }
+        Ok(View { fv, icons })
+    }
+}
+
+fn place(view: &View, moves: &[(usize, POINT)]) -> Result<(), String> {
+    if moves.is_empty() {
+        return Ok(());
+    }
+    unsafe {
+        // Windows' "Auto arrange icons" would undo every placement
+        let _ = view.fv.SetCurrentFolderFlags(FWF_AUTOARRANGE.0 as u32, 0);
+        let pidls: Vec<*const ITEMIDLIST> = moves.iter().map(|(i, _)| view.icons[*i].pidl as *const _).collect();
+        let pts: Vec<POINT> = moves.iter().map(|m| m.1).collect();
+        view.fv.SelectAndPositionItems(pidls.len() as u32, pidls.as_ptr(), Some(pts.as_ptr()), SVSI_POSITIONITEM.0 as u32).map_err(|e| e.to_string())
+    }
+}
+
+/// Which side of the screen the groups go on, and how the wallpaper looks there.
+fn layout_side() -> bool {
+    // true = left
+    let Ok(h) = crate::ipc::call_quiet("desktop_layout_hint", json!({})) else { return true };
+    let busy: Vec<f64> = h["busy"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+    if busy.len() != 9 {
+        return true;
+    }
+    let mut left = busy[0] + busy[3] + busy[6];
+    let mut right = busy[2] + busy[5] + busy[8];
+    // keep clear of the widgets
+    if h["widgets_on"].as_bool().unwrap_or(false) {
+        match h["widget_cell"].as_u64().unwrap_or(2) % 3 {
+            0 => left += 2.0,
+            2 => right += 2.0,
+            _ => {}
+        }
+    }
+    left <= right * 1.15
+}
+
+/// Lay every desktop icon out in tidy groups: each kind is a compact block, blocks run down
+/// the calmer side of the wallpaper (away from the widgets) with a gap between them.
+fn arrange(apps: &[DesktopApp]) -> Result<usize, String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN};
+    let view = desktop_view()?;
+    if view.icons.is_empty() {
+        return Ok(0);
+    }
+    let mut spacing = POINT::default();
+    unsafe {
+        let _ = view.fv.GetSpacing(&mut spacing);
+    }
+    let (cx, cy) = (spacing.x.max(60), spacing.y.max(70));
+    let (l, t, r, b) = crate::win::work_area();
+    let (vx, vy) = unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN)) };
+    let (ox, oy) = (l - vx + cx / 8, t - vy + cy / 10);
+    let cols = ((r - l) / cx).max(1);
+    let rows = ((b - t) / cy).max(1);
+
+    // groups: Windows' own icons first (Recycle Bin, This PC), then each kind, then files & folders
+    let mut groups: Vec<Vec<usize>> = vec![vec![]; KINDS.len() + 2];
+    for (i, ic) in view.icons.iter().enumerate() {
+        let lname = ic.name.to_lowercase();
+        if lname.starts_with("::") {
+            groups[0].push(i);
+        } else if let Some(a) = apps.iter().find(|a| a.file.to_lowercase() == lname) {
+            let k = KINDS.iter().position(|k| *k == a.kind).unwrap_or(KINDS.len() - 1);
+            groups[k + 1].push(i);
+        } else {
+            groups[KINDS.len() + 1].push(i);
+        }
+    }
+    for g in groups.iter_mut() {
+        g.sort_by_key(|i| {
+            let n = &view.icons[*i].name;
+            Path::new(n).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_else(|| n.to_lowercase())
+        });
+    }
+
+    let left = layout_side();
+    let mut moves: Vec<(usize, POINT)> = vec![];
+    let (mut band, mut band_w, mut row) = (0i32, 0i32, 0i32);
+    for g in groups.iter().filter(|g| !g.is_empty()) {
+        let n = g.len() as i32;
+        // compact blocks: up to 5 tall, a bit taller for big groups
+        let mut h = if n <= 10 { n.min(5) } else { (n + (n + 5) / 6 - 1) / ((n + 5) / 6) };
+        h = h.min(rows);
+        let w = (n + h - 1) / h;
+        if row > 0 && row + h > rows {
+            band += band_w;
+            band_w = 0;
+            row = 0;
+        }
+        for (j, idx) in g.iter().enumerate() {
+            let j = j as i32;
+            let col = band + j / h;
+            let col = if left { col } else { cols - 1 - col };
+            let rr = row + j % h;
+            moves.push((*idx, POINT { x: ox + col.clamp(0, cols - 1) * cx, y: oy + rr.min(rows - 1) * cy }));
+        }
+        band_w = band_w.max(w);
+        row += h + 1; // one empty space between groups
+        if row >= rows {
+            band += band_w;
+            band_w = 0;
+            row = 0;
+        }
+    }
+    // remember where everything was, for Undo
+    let mut mem = load();
+    mem.before = view.icons.iter().map(|i| (i.name.clone(), i.pos.x, i.pos.y)).collect();
+    save(&mem);
+    place(&view, &moves)?;
+    Ok(moves.len())
+}
+
+/// Group every app with similar ones on the desktop. `min_age` waits for brand-new shortcuts
+/// (an installer may still be adding more).
+pub fn run(min_age: Duration) -> Result<Vec<(String, String)>, String> {
+    let mut mem = load();
+    if mem.placed.len() + mem.last.len() > 0 || KINDS.iter().any(|k| crate::tidy::desktop().join(k).is_dir()) {
+        flatten_folders(&mut mem);
+        mem.placed.clear();
+        save(&mem);
+    }
+    let apps = scan();
+    if min_age > Duration::ZERO && apps.iter().any(|a| !older_than(Path::new(&a.file), min_age.as_secs())) {
+        return Ok(vec![]);
+    }
+    let fresh: Vec<(String, String)> = apps.iter().filter(|a| !a.sorted).map(|a| (a.name.clone(), a.kind.clone())).collect();
+    arrange(&apps)?;
+    let mut mem = load();
+    mem.arranged = apps.iter().map(|a| a.file.to_lowercase()).collect();
+    mem.ts = win::now();
+    save(&mem);
+    Ok(fresh)
+}
+
+/// Pick a group for an app yourself (remembered from now on), and re-arrange.
 pub fn set_kind(file: &str, kind: &str) -> Result<(), String> {
     if !KINDS.contains(&kind) {
-        return Err("Unknown folder".into());
+        return Err("Unknown group".into());
     }
-    let p = PathBuf::from(file);
     let mut mem = load();
-    mem.overrides.insert(app_key(&p), kind.into());
+    mem.overrides.insert(app_key(Path::new(file)), kind.into());
     save(&mem);
-    // already sorted into a folder? move it across now
-    let base = crate::tidy::desktop();
-    if p.parent().map(|d| KINDS.iter().any(|k| d == base.join(k))).unwrap_or(false) && p.exists() {
-        let dir = base.join(kind);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let dest = free_name(&dir, &p.file_name().unwrap_or_default().to_string_lossy());
-        std::fs::rename(&p, &dest).map_err(|e| e.to_string())?;
-        let mut mem = load();
-        mem.placed.insert(dest.file_name().unwrap_or_default().to_string_lossy().to_string(), kind.into());
-        save(&mem);
-        refresh_desktop();
-    }
-    Ok(())
+    run(Duration::ZERO).map(|_| ())
 }
 
-/// Put everything from the last organize back.
+/// Put every icon back where it was before the last arrange.
 pub fn undo() -> Result<usize, String> {
-    let mut mem = load();
-    if mem.last.is_empty() {
+    let mem = load();
+    if mem.before.is_empty() {
         return Err("Nothing to undo".into());
     }
-    let mut n = 0;
-    let mut public_back = vec![];
-    for (from, to, public) in mem.last.drain(..) {
-        if public {
-            public_back.push(json!({ "from": to, "name": Path::new(&from).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default() }));
-            continue;
-        }
-        if Path::new(&to).exists() && !Path::new(&from).exists() && std::fs::rename(&to, &from).is_ok() {
-            n += 1;
-        }
-    }
-    if !public_back.is_empty() {
-        if let Ok(v) = crate::ipc::call("public_desktop_restore", json!({ "moves": public_back })) {
-            n += v.as_u64().unwrap_or(0) as usize;
-        }
-    }
-    for k in KINDS {
-        let _ = std::fs::remove_dir(crate::tidy::desktop().join(k));
-    }
+    let view = desktop_view()?;
+    let moves: Vec<(usize, POINT)> = view
+        .icons
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ic)| mem.before.iter().find(|b| b.0 == ic.name).map(|b| (i, POINT { x: b.1, y: b.2 })))
+        .collect();
+    place(&view, &moves)?;
+    let mut mem = load();
+    mem.before.clear();
+    mem.arranged.clear();
     save(&mem);
-    refresh_desktop();
-    Ok(n)
+    Ok(moves.len())
 }
 
 pub fn preview() -> Value {
     let apps = scan();
     let mem = load();
-    json!({ "apps": apps, "kinds": KINDS, "can_undo": !mem.last.is_empty(), "last": mem.ts })
+    json!({ "apps": apps, "kinds": KINDS, "can_undo": !mem.before.is_empty(), "last": mem.ts })
 }
 
-fn refresh_desktop() {
-    use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
-    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
-}
-
-/// Autopilot: new apps on the desktop get sorted within a minute of appearing.
+/// Autopilot: when a new app lands on the desktop, it joins its group within a minute.
 pub fn start_auto() {
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(30));
@@ -552,16 +665,16 @@ pub fn start_auto() {
         if !c["autopilot"].as_bool().unwrap_or(true) || !c["organize_auto"].as_bool().unwrap_or(false) {
             continue;
         }
-        let pending = scan().into_iter().filter(|a| !a.sorted).count();
-        if pending == 0 {
+        let pending: Vec<DesktopApp> = scan().into_iter().filter(|a| !a.sorted).collect();
+        if pending.is_empty() {
             continue;
         }
         if let Ok(moved) = run(Duration::from_secs(45)) {
             if !moved.is_empty() {
                 let body = if moved.len() == 1 {
-                    format!("{} → {}", moved[0].0, moved[0].1)
+                    format!("{} placed with your {}", moved[0].0, moved[0].1.to_lowercase())
                 } else {
-                    format!("{} apps sorted · {} → {} and more", moved.len(), moved[0].0, moved[0].1)
+                    format!("{} apps placed with similar ones", moved.len())
                 };
                 crate::ui_toast::local("Desktop organized", &body);
             }

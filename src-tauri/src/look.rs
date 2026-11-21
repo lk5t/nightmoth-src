@@ -185,6 +185,8 @@ pub struct Analysis {
     pub accent: String,
     pub accent_index: usize,
     pub empty_area: String,
+    /// how busy each part of the 3x3 grid is (0..1), row by row
+    pub busy: Vec<f32>,
     /// 0..9 (row-major 3x3 grid): the calmest spot for desktop widgets
     pub calm_cell: usize,
 }
@@ -311,6 +313,10 @@ pub fn analyze(path: &str) -> Result<Analysis, String> {
         accent: to_hex(fix_accent(palette[best], dark)),
         accent_index: best,
         empty_area: names[calm].into(),
+        busy: {
+            let max = cells.iter().cloned().fold(0f32, f32::max).max(1e-6);
+            cells.iter().map(|c| c / max).collect()
+        },
         calm_cell: widget_cell,
     })
 }

@@ -207,6 +207,10 @@ Public desktop shortcuts are moved by the engine (admin) only into the user's ow
 - **Autopilot activity feed** on Home.
 - **Tray**: Make my PC perfect, Organize desktop now, Invisible taskbar and Desktop widgets switches.
 
+### 3.12 Changed in 0.8 — Organize desktop without folders
+
+Apps are no longer moved into folders. Every icon stays on the desktop and is positioned through the desktop's own icon view (`IShellWindows` → `IFolderView2::SelectAndPositionItems`, auto-arrange switched off): Windows' icons (Recycle Bin, This PC) first, then one compact block per kind (up to 5 tall, alphabetical), then other files and folders, with a one-space gap between blocks. Blocks run down the calmer side of the wallpaper (left/right column busyness from the wallpaper analysis, avoiding the widgets' side) and continue in the next column when one fills up. Shared-desktop shortcuts are placed the same way without being moved. Folders made by 0.5–0.7 are emptied back onto the desktop. Undo restores every icon's previous position. Choosing a group for an app re-arranges and is remembered; Autopilot places new apps within a minute.
+
 ### 3.11 Added in 0.7 — removal that doesn't give up
 
 - **Uninstall chain** (unused-app cleaner and Remove button): the app's QuietUninstallString / known silent command → `MsiExec /X{product code}` (from the uninstall string or key name) → common silent switches on the uninstaller (`/S`, `/VERYSILENT…`, `/quiet`, `/silent`, `-s`, `--silent`, …, fast time limits) → `winget uninstall --exact --silent --force` → forced removal (close its processes, delete its own install folder, Start menu/desktop shortcuts pointing into it, and its uninstall entry; only for a dedicated folder that passes the leftover-folder checks). Every step is time-limited and verified before moving on. Per-user apps still run everything with the user's rights. The cleaner no longer needs a silent uninstaller to pick an app.

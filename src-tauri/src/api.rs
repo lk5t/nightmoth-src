@@ -159,6 +159,13 @@ pub fn dispatch(cmd: &str, a: &Value) -> R {
         "preset_apply" => ok(look::preset(&arg::<String>(a, "id")?)?),
         "gallery_list" => ok(gallery::list()?),
         "widgets_state" => ok(look::widgets_state()),
+        "desktop_layout_hint" => {
+            let c = cfg();
+            let wall = current_wall(&c);
+            let busy = if wall.is_empty() { vec![] } else { look::analyze(&wall).map(|x| x.busy).unwrap_or_default() };
+            let w = look::widgets_state();
+            ok(json!({ "busy": busy, "widget_cell": w.cell, "widgets_on": w.on && !w.widgets.is_empty() }))
+        }
         "public_desktop_move" => {
             let moves: Vec<Value> = arg(a, "moves")?;
             ok(crate::organize::public_move(&moves))
